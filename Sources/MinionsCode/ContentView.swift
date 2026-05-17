@@ -456,6 +456,8 @@ struct ContentView: View {
                         terminalToolbar(for: tid, terminal: terminal)
                         IsolatedTerminalView(terminal: terminal)
                             .id(tid)
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 6)
                     }
                 } else {
                     emptyState
