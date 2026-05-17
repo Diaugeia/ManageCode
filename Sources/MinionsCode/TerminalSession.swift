@@ -12,7 +12,9 @@ final class TerminalSession: @unchecked Sendable {
     let mode: SessionMode
     let id: String
     let cwd: String
+    var isReadOnly: Bool = false
     private(set) var isRunning = false
+    nonisolated(unsafe) private var keyMonitor: Any?
 
     init(mode: SessionMode = .shell, cwd: String? = nil) {
         self.mode = mode
@@ -39,15 +41,88 @@ final class TerminalSession: @unchecked Sendable {
             terminalView.startProcess(executable: claudePath, args: args, environment: env, execName: "claude", currentDirectory: self.cwd)
         }
         isRunning = true
+        installKeyMonitor()
     }
 
-    func sendClaudeCommand() {
-        terminalView.send(txt: "claude\n")
+    deinit {
+        // keyMonitor is nonisolated-safe to release through MainActor.assumeIsolated guards
+        if let m = keyMonitor {
+            NSEvent.removeMonitor(m)
+        }
+    }
+
+    func sendCommand(_ command: String) {
+        terminalView.send(txt: "\(command)\n")
+    }
+
+    func toggleReadOnly() {
+        isReadOnly.toggle()
     }
 
     func terminate() {
         terminalView.process.terminate()
         isRunning = false
+    }
+
+    /// Intercepts key events bound for our terminal view to:
+    /// 1. Translate macOS shortcuts (Cmd+Backspace, Cmd+Left, Option+Backspace) to readline sequences.
+    /// 2. Swallow input events when in read-only mode.
+    /// Returns nil to consume the event, the original event to let it through.
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self = self else { return event }
+            // Only intercept when our terminal is the first responder
+            guard let window = self.terminalView.window,
+                  window.firstResponder === self.terminalView else {
+                return event
+            }
+            return self.handleKey(event)
+        }
+    }
+
+    private func handleKey(_ event: NSEvent) -> NSEvent? {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Read-only mode: drop everything except scrolling/copy/select-all/find
+        if isReadOnly {
+            if mods.contains(.command) {
+                let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+                if ["c", "a", "f"].contains(chars) { return event }
+            }
+            if event.specialKey == .pageUp || event.specialKey == .pageDown
+                || event.specialKey == .home || event.specialKey == .end
+                || event.specialKey == .upArrow || event.specialKey == .downArrow {
+                return event
+            }
+            return nil
+        }
+
+        // Cmd+Backspace -> Ctrl+U (kill to start of line)
+        if mods.contains(.command) && (event.specialKey == .delete || event.keyCode == 51) {
+            terminalView.send(txt: "\u{15}")
+            return nil
+        }
+        // Cmd+Delete (forward delete) -> Ctrl+K (kill to end of line)
+        if mods.contains(.command) && event.keyCode == 117 {
+            terminalView.send(txt: "\u{0B}")
+            return nil
+        }
+        // Cmd+Left -> Ctrl+A (move to start of line)
+        if mods.contains(.command) && event.specialKey == .leftArrow {
+            terminalView.send(txt: "\u{01}")
+            return nil
+        }
+        // Cmd+Right -> Ctrl+E (move to end of line)
+        if mods.contains(.command) && event.specialKey == .rightArrow {
+            terminalView.send(txt: "\u{05}")
+            return nil
+        }
+        // Option+Backspace -> Ctrl+W (delete word backward)
+        if mods.contains(.option) && (event.specialKey == .delete || event.keyCode == 51) {
+            terminalView.send(txt: "\u{17}")
+            return nil
+        }
+        return event
     }
 
     static func applyDefaultTheme(to terminal: LocalProcessTerminalView) {

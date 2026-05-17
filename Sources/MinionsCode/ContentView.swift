@@ -152,21 +152,13 @@ struct ContentView: View {
                 .foregroundColor(TEXT_PRIMARY)
                 .tracking(0.3)
             Spacer()
-            Menu {
-                Button {
-                    newShellSession()
-                } label: { Label("Shell", systemImage: "terminal") }
-                Button {
-                    newClaudeSession()
-                } label: { Label("Claude", systemImage: "sparkles") }
-            } label: {
+            Button(action: newShellSession) {
                 Image(systemName: "plus.circle.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(GOLD)
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("New session (⌘N for shell, ⌘⇧N for claude)")
+            .buttonStyle(.plain)
+            .help("New shell tab (⌘N) — use the Run Claude menu in the toolbar to launch claude")
 
             Button { showingSettings = true } label: {
                 Image(systemName: "gearshape.fill")
@@ -253,7 +245,7 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.05))
             if let tid = activeTerminalId, let terminal = terminals[tid] {
                 terminalToolbar(for: tid, terminal: terminal)
-                TerminalViewRepresentable(terminalView: terminal.terminalView)
+                IsolatedTerminalView(terminal: terminal)
                     .id(tid)
             } else {
                 emptyState
@@ -345,6 +337,9 @@ struct ContentView: View {
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Capsule().fill(GOLD.opacity(0.15)))
                 .foregroundColor(GOLD)
+
+            ReadOnlyToggle(terminal: terminal)
+
             Spacer()
             if let s = session {
                 Pill(label: "In", value: fmtTokens(s.usage.totalInput), color: GOLD)
@@ -352,17 +347,7 @@ struct ContentView: View {
                 Pill(label: "$", value: fmtCost(s.cost), color: Color.orange)
             }
             if case .shell = terminal.mode {
-                Button { terminal.sendClaudeCommand() } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "sparkles")
-                        Text("Run Claude")
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Capsule().fill(GOLD.opacity(0.15)))
-                    .foregroundColor(GOLD)
-                }
-                .buttonStyle(.plain)
+                ClaudeLaunchMenu(terminal: terminal)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -459,6 +444,96 @@ struct ContentView: View {
     private func commitRename(_ session: SessionInfo) {
         manager.renameSession(session.id, to: nameInput)
         editingName = nil
+    }
+}
+
+/// Isolates the terminal NSView from parent SwiftUI re-renders.
+/// Equatable on terminal id so updateNSView is a no-op when sessions update.
+struct IsolatedTerminalView: View {
+    let terminal: TerminalSession
+
+    var body: some View {
+        TerminalViewRepresentable(terminalView: terminal.terminalView)
+    }
+}
+
+struct ReadOnlyToggle: View {
+    let terminal: TerminalSession
+    @State private var readOnly = false
+
+    var body: some View {
+        Button {
+            terminal.toggleReadOnly()
+            readOnly = terminal.isReadOnly
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: readOnly ? "lock.fill" : "pencil.circle.fill")
+                    .font(.system(size: 10))
+                Text(readOnly ? "Read-only" : "Editing")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(readOnly ? Color.gray.opacity(0.18) : Color(red: 1.0, green: 0.78, blue: 0.10).opacity(0.15)))
+            .foregroundColor(readOnly ? .white.opacity(0.7) : Color(red: 1.0, green: 0.78, blue: 0.10))
+        }
+        .buttonStyle(.plain)
+        .help(readOnly ? "Read-only mode — click to enable editing (⌘E)" : "Editing mode — click to lock (⌘E)")
+        .keyboardShortcut("e")
+        .onAppear { readOnly = terminal.isReadOnly }
+    }
+}
+
+struct ClaudeLaunchMenu: View {
+    let terminal: TerminalSession
+
+    var body: some View {
+        Menu {
+            Section("Quick start") {
+                Button { terminal.sendCommand("claude") } label: {
+                    Label("claude", systemImage: "sparkles")
+                }
+                Button { terminal.sendCommand("claude --effort max") } label: {
+                    Label("claude — effort max", systemImage: "bolt.fill")
+                }
+                Button { terminal.sendCommand("claude --permission-mode bypassPermissions") } label: {
+                    Label("claude — bypass permissions", systemImage: "lock.open")
+                }
+                Button { terminal.sendCommand("claude --effort max --permission-mode bypassPermissions") } label: {
+                    Label("claude — max + bypass", systemImage: "flame.fill")
+                }
+            }
+            Section("Models") {
+                Button { terminal.sendCommand("claude --model opus") } label: { Text("claude — opus") }
+                Button { terminal.sendCommand("claude --model sonnet") } label: { Text("claude — sonnet") }
+                Button { terminal.sendCommand("claude --model haiku") } label: { Text("claude — haiku") }
+            }
+            Section("Resume") {
+                Button { terminal.sendCommand("claude --resume") } label: {
+                    Label("claude — resume picker", systemImage: "list.bullet")
+                }
+                Button { terminal.sendCommand("claude --continue") } label: {
+                    Label("claude — continue last", systemImage: "arrow.clockwise")
+                }
+            }
+            Section("Advanced") {
+                Button { terminal.sendCommand("claude --help") } label: { Text("claude — help") }
+                Button { terminal.sendCommand("claude doctor") } label: { Text("claude doctor") }
+                Button { terminal.sendCommand("claude /cost") } label: { Text("claude /cost") }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                Text("Run Claude")
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(Color(red: 1.0, green: 0.78, blue: 0.10).opacity(0.15)))
+            .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 }
 
@@ -694,7 +769,6 @@ struct SessionCard: View {
                 )
         )
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { viewModel.onResume(session) }
         .onTapGesture { viewModel.onSelect(session) }
         .contextMenu {
             Button("Resume in Terminal") { viewModel.onResume(session) }
