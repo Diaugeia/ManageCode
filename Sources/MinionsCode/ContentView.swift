@@ -48,9 +48,9 @@ struct ContentView: View {
         .background(
             ZStack {
                 if settings.translucentBackground {
-                    VisualEffectBackground(material: .underWindowBackground, blendingMode: .behindWindow)
+                    VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow)
                 }
-                BG_DARKEST.opacity(settings.translucentBackground ? 0.55 : 1)
+                BG_DARKEST.opacity(settings.translucentBackground ? 0.30 : 1)
             }
         )
         .preferredColorScheme(.dark)
@@ -163,7 +163,7 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.05))
             sidebarFooter
         }
-        .background(BG_DARK)
+        .background(BG_DARK.opacity(settings.translucentBackground ? 0.45 : 1))
     }
 
     private var filterBar: some View {
@@ -282,7 +282,11 @@ struct ContentView: View {
                 .tracking(0.3)
             Spacer()
             Menu {
-                Button("Delete empty sessions") { deleteEmptySessions() }
+                Button("Delete junk sessions (tmp / empty)") {
+                    let n = manager.deleteJunkSessions()
+                    if n > 0 { manager.scan() }
+                }
+                Button("Delete empty tabs") { deleteEmptySessions() }
                 Button("Refresh now") { manager.scan() }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -429,7 +433,7 @@ struct ContentView: View {
                 })
             }
         }
-        .background(BG_DARKEST)
+        .background(BG_DARKEST.opacity(settings.translucentBackground ? 0 : 1))
     }
 
     private var statusStrip: some View {
@@ -450,7 +454,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(BG_DARK)
+        .background(BG_DARK.opacity(settings.translucentBackground ? 0.4 : 1))
     }
 
     private func statusBadge(label: String, value: String, tint: Color) -> some View {
@@ -517,7 +521,7 @@ struct ContentView: View {
             .padding(.trailing, 8)
         }
         .frame(height: 38)
-        .background(BG_DARK)
+        .background(BG_DARK.opacity(settings.translucentBackground ? 0.4 : 1))
     }
 
     private func nameForTerminal(_ t: TerminalSession) -> String {
@@ -587,7 +591,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(BG_DARK)
+        .background(BG_DARK.opacity(settings.translucentBackground ? 0.4 : 1))
     }
 
     private var emptyState: some View {

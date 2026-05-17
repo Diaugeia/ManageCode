@@ -97,48 +97,107 @@ final class SessionManager {
         }
     }
 
-    /// Phase 1 — fast: only live sessions. Reads ~/.claude/sessions/*.json (small files,
-    /// <1KB each), no JSONL parsing. The JSONL stat-only check is cheap.
+    /// Phase 1 — fast: live PIDs + stat-only walk of recent JSONLs (last 24h).
+    /// Reads no JSONL bodies; uses cached parses if available, otherwise leaves
+    /// placeholder usage that Phase 2 will fill in. Sorted by recency.
     nonisolated static func scanLiveOnly(claudeDir: URL, customNames: [String: String]) -> [SessionInfo] {
         let sessionsDir = claudeDir.appendingPathComponent("sessions")
         let projectsDir = claudeDir.appendingPathComponent("projects")
+        let recencyHorizon = Date().addingTimeInterval(-24 * 3600)
 
-        guard let files = try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else {
-            return []
-        }
         var result: [SessionInfo] = []
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            let pid = json["pid"] as? Int ?? Int(file.deletingPathExtension().lastPathComponent) ?? 0
-            guard kill(Int32(pid), 0) == 0 else { continue }
+        var seen: Set<String> = []
 
-            let sessionId = json["sessionId"] as? String ?? ""
-            let cwd = json["cwd"] as? String ?? ""
-            let status = json["status"] as? String ?? "unknown"
-            let version = json["version"] as? String ?? ""
-            let startedAtMs = json["startedAt"] as? Double
-            let startedAt = startedAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
+        // Live PIDs from sessions/
+        if let files = try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) {
+            for file in files where file.pathExtension == "json" {
+                guard let data = try? Data(contentsOf: file),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                let pid = json["pid"] as? Int ?? Int(file.deletingPathExtension().lastPathComponent) ?? 0
+                guard kill(Int32(pid), 0) == 0 else { continue }
 
-            // Cache hit fast path — if we've seen this jsonl before with the same fingerprint, reuse parsed data.
-            let jsonlURL = projectsDir.appendingPathComponent(projectNameFor(cwd)).appendingPathComponent("\(sessionId).jsonl")
-            let (usage, model, aiTitle, mtime, _) = parseUsageStaticWithMeta(jsonlURL: jsonlURL)
-            let cost = Pricing.cost(for: usage, model: model)
-            let cacheHitRate: Double = {
-                let total = usage.cacheRead + usage.cacheCreation + usage.totalInput
-                guard total > 0 else { return 0 }
-                return Double(usage.cacheRead) / Double(total)
-            }()
-            let name = customNames[sessionId] ?? aiTitle ?? Self.shortPathStatic(cwd)
-            result.append(SessionInfo(
-                id: sessionId, pid: pid, sessionId: sessionId, name: name,
-                cwd: cwd, status: status, startedAt: startedAt,
-                lastActivityAt: mtime ?? Date(),
-                version: version, model: model, usage: usage, cost: cost,
-                cacheHitRate: cacheHitRate, isAlive: true
-            ))
+                let sessionId = json["sessionId"] as? String ?? ""
+                let cwd = json["cwd"] as? String ?? ""
+                if isJunkCwd(cwd) { continue }
+
+                let status = json["status"] as? String ?? "unknown"
+                let version = json["version"] as? String ?? ""
+                let startedAtMs = json["startedAt"] as? Double
+                let startedAt = startedAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
+
+                // Use cache if available, otherwise zero-valued placeholder until Phase 2.
+                let (usage, model, aiTitle) = cachedParse(sessionId: sessionId)
+
+                let cost = Pricing.cost(for: usage, model: model)
+                let cacheHitRate: Double = {
+                    let total = usage.cacheRead + usage.cacheCreation + usage.totalInput
+                    guard total > 0 else { return 0 }
+                    return Double(usage.cacheRead) / Double(total)
+                }()
+                let name = customNames[sessionId] ?? aiTitle ?? Self.shortPathStatic(cwd)
+                result.append(SessionInfo(
+                    id: sessionId, pid: pid, sessionId: sessionId, name: name,
+                    cwd: cwd, status: status, startedAt: startedAt,
+                    lastActivityAt: Date(),
+                    version: version, model: model, usage: usage, cost: cost,
+                    cacheHitRate: cacheHitRate, isAlive: true
+                ))
+                seen.insert(sessionId)
+            }
         }
+
+        // Recent JSONLs (last 24h, stat-only) so the sidebar isn't empty when no claude
+        // process happens to be running. Phase 2 backfills full usage data.
+        if let projects = try? FileManager.default.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) {
+            for project in projects {
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: project.path, isDirectory: &isDir), isDir.boolValue else { continue }
+                guard let jsonls = try? FileManager.default.contentsOfDirectory(at: project, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { continue }
+                let cwdGuess = cwdFromProjectName(project.lastPathComponent)
+                if isJunkCwd(cwdGuess) { continue }
+
+                for url in jsonls where url.pathExtension == "jsonl" {
+                    let sessionId = url.deletingPathExtension().lastPathComponent
+                    if seen.contains(sessionId) { continue }
+                    guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                          let mtime = attrs[.modificationDate] as? Date,
+                          mtime >= recencyHorizon else { continue }
+
+                    let (usage, model, aiTitle) = cachedParse(sessionId: sessionId)
+                    let cost = Pricing.cost(for: usage, model: model)
+                    let cacheHitRate: Double = {
+                        let total = usage.cacheRead + usage.cacheCreation + usage.totalInput
+                        guard total > 0 else { return 0 }
+                        return Double(usage.cacheRead) / Double(total)
+                    }()
+                    let name = customNames[sessionId] ?? aiTitle ?? Self.shortPathStatic(cwdGuess)
+                    result.append(SessionInfo(
+                        id: sessionId, pid: 0, sessionId: sessionId, name: name,
+                        cwd: cwdGuess, status: "ended", startedAt: mtime,
+                        lastActivityAt: mtime,
+                        version: "", model: model, usage: usage, cost: cost,
+                        cacheHitRate: cacheHitRate, isAlive: false
+                    ))
+                    seen.insert(sessionId)
+                }
+            }
+        }
+
         return result
+    }
+
+    /// Excludes temp-folder sessions (sandboxed app working directories).
+    nonisolated static func isJunkCwd(_ cwd: String) -> Bool {
+        cwd.hasPrefix("/private/var/folders/") || cwd.hasPrefix("/var/folders/") || cwd.isEmpty
+    }
+
+    nonisolated static func cachedParse(sessionId: String) -> (TokenUsage, String?, String?) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let c = cache[sessionId] {
+            return (c.usage, c.model, c.aiTitle)
+        }
+        return (TokenUsage(), nil, nil)
     }
 
     nonisolated static func projectNameFor(_ cwd: String) -> String {
@@ -174,6 +233,7 @@ final class SessionManager {
                 let sessionId = url.deletingPathExtension().lastPathComponent
                 let (usage, model, aiTitle, lastModified, cwdFromJsonl) = parseUsageStaticWithMeta(jsonlURL: url)
                 let cwd = cwdFromJsonl ?? Self.cwdFromProjectName(project.lastPathComponent)
+                if isJunkCwd(cwd) { continue }
                 let cost = Pricing.cost(for: usage, model: model)
                 let cacheHitRate: Double = {
                     let total = usage.cacheRead + usage.cacheCreation + usage.totalInput
@@ -259,6 +319,41 @@ final class SessionManager {
         if let idx = sessions.firstIndex(where: { $0.id == id }) {
             sessions[idx].name = name.isEmpty ? Self.shortPathStatic(sessions[idx].cwd) : name
         }
+    }
+
+    /// Delete junk JSONL files: ones with cwd in a tmp folder, or with zero
+    /// non-sidechain messages. Doesn't touch live sessions or files we cannot
+    /// stat. Returns the count deleted.
+    @discardableResult
+    func deleteJunkSessions() -> Int {
+        let projectsDir = claudeDir.appendingPathComponent("projects")
+        let sessionsToRemove = sessions.filter { s in
+            !s.isAlive && (Self.isJunkCwd(s.cwd) || s.usage.messageCount == 0)
+        }
+        var removed = 0
+        for s in sessionsToRemove {
+            // Find the JSONL by walking projects/ for matching sessionId
+            guard let projects = try? FileManager.default.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) else { continue }
+            for project in projects {
+                let url = project.appendingPathComponent("\(s.sessionId).jsonl")
+                if FileManager.default.fileExists(atPath: url.path) {
+                    do {
+                        try FileManager.default.removeItem(at: url)
+                        removed += 1
+                    } catch {
+                        // ignore — the user can retry
+                    }
+                    break
+                }
+            }
+        }
+        // Trim from in-memory list and from the cache.
+        let removedIds = Set(sessionsToRemove.map(\.sessionId))
+        sessions.removeAll { removedIds.contains($0.sessionId) }
+        Self.cacheLock.lock()
+        for id in removedIds { Self.cache.removeValue(forKey: id) }
+        Self.cacheLock.unlock()
+        return removed
     }
 
     private func loadNames() {
