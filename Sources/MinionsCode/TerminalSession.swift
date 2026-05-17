@@ -6,6 +6,34 @@ enum SessionMode {
     case claude(resumeId: String?)
 }
 
+/// Singleton broker for the "you're read-only" toast.
+/// One toast at a time across the whole app. Each new keystroke refreshes
+/// the dismissal timer so it stays visible while the user keeps typing,
+/// then fades out 2.5s after the last attempt.
+@MainActor
+@Observable
+final class ReadOnlyToastCenter {
+    static let shared = ReadOnlyToastCenter()
+    var visibleSessionId: String?
+    private var dismissTask: Task<Void, Never>?
+
+    func signalAttempt(forSession id: String) {
+        visibleSessionId = id
+        dismissTask?.cancel()
+        dismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(2500))
+            if !Task.isCancelled {
+                self.visibleSessionId = nil
+            }
+        }
+    }
+
+    func dismiss() {
+        dismissTask?.cancel()
+        visibleSessionId = nil
+    }
+}
+
 /// Singleton that owns the *single* global NSEvent local monitor.
 /// Per-tab monitors caused O(N) closures to run per keystroke; this fixes that.
 @MainActor
@@ -42,6 +70,8 @@ final class TerminalKeyMonitor {
                 || sk == .upArrow || sk == .downArrow {
                 return event
             }
+            // User tried to type while read-only — surface the toast.
+            ReadOnlyToastCenter.shared.signalAttempt(forSession: session.id)
             return nil
         }
 
@@ -109,12 +139,30 @@ final class TerminalSession: @unchecked Sendable {
     }
 
     func toggleReadOnly() {
-        isReadOnly.toggle()
+        setReadOnly(!isReadOnly)
+    }
+
+    func setReadOnly(_ ro: Bool) {
+        isReadOnly = ro
+        // Physically remove keyboard focus when read-only — the terminal can still
+        // be scrolled and selected, but cannot receive any keystrokes including
+        // those that bypass our NSEvent monitor (IME, paste, etc.).
+        guard let window = terminalView.window else { return }
+        if ro && window.firstResponder === terminalView {
+            window.makeFirstResponder(nil)
+        } else if !ro && window.firstResponder !== terminalView {
+            window.makeFirstResponder(terminalView)
+        }
     }
 
     /// Activate keyboard handling for this terminal. Call when the user switches tabs.
     func activate() {
         TerminalKeyMonitor.shared.activeSession = self
+        if !isReadOnly {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak terminalView] in
+                terminalView?.window?.makeFirstResponder(terminalView)
+            }
+        }
     }
 
     func terminate() {

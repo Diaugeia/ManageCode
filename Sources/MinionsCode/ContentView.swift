@@ -24,6 +24,8 @@ struct ContentView: View {
     @State private var sidebarCollapsed = true
     @State private var sidebarWidth: CGFloat = 320
     @State private var orderedTerminalIds: [String] = []
+    @State private var showingCloseConfirm = false
+    @State private var pendingCloseId: String?
 
     private var sidebarTargetWidth: CGFloat {
         sidebarCollapsed ? 0 : sidebarWidth
@@ -81,9 +83,56 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) { sidebarCollapsed.toggle() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .closeActiveTab)) { _ in
+            if let tid = activeTerminalId { closeTerminal(tid) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomIn)) { _ in
+            settings.fontSize = min(22, settings.fontSize + 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomOut)) { _ in
+            settings.fontSize = max(9, settings.fontSize - 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomReset)) { _ in
+            settings.fontSize = 13
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectTab)) { note in
+            if let i = note.object as? Int, i >= 0 && i < orderedTerminalIds.count {
+                let tid = orderedTerminalIds[i]
+                activeTerminalId = tid
+                terminals[tid]?.activate()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .nextTab)) { _ in
+            switchTab(offset: 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .prevTab)) { _ in
+            switchTab(offset: -1)
+        }
         .sheet(isPresented: $showingSettings) {
             SettingsSheet(isPresented: $showingSettings)
         }
+        .alert("Close this tab?", isPresented: $showingCloseConfirm, presenting: pendingCloseId) { id in
+            Button("Cancel", role: .cancel) { pendingCloseId = nil }
+            Button("Close", role: .destructive) {
+                if let id = pendingCloseId { reallyCloseTerminal(id) }
+                pendingCloseId = nil
+            }
+        } message: { _ in
+            Text("This terminal has a process running. Closing will terminate it.")
+        }
+        .accentColor(GOLD)
+        .tint(GOLD)
+    }
+
+    private func switchTab(offset: Int) {
+        guard let tid = activeTerminalId,
+              let idx = orderedTerminalIds.firstIndex(of: tid),
+              !orderedTerminalIds.isEmpty else { return }
+        let n = orderedTerminalIds.count
+        let next = ((idx + offset) % n + n) % n
+        let nextId = orderedTerminalIds[next]
+        activeTerminalId = nextId
+        terminals[nextId]?.activate()
     }
 
     private func applyWindowTranslucency() {
@@ -201,8 +250,8 @@ struct ContentView: View {
     private var sidebarHeader: some View {
         HStack(spacing: 8) {
             MinionDot(size: 14)
-            Text("MinionsCode")
-                .font(.system(size: 14, weight: .heavy))
+            Text("Sessions")
+                .font(.system(size: 13, weight: .heavy))
                 .foregroundColor(TEXT_PRIMARY)
                 .tracking(0.3)
             Spacer()
@@ -217,14 +266,6 @@ struct ContentView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-
-            Button(action: newShellSession) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(GOLD)
-            }
-            .buttonStyle(.plain)
-            .help("New shell tab (⌘N) — use the Run Claude menu in the toolbar to launch claude")
 
             Button { showingSettings = true } label: {
                 Image(systemName: "gearshape.fill")
@@ -307,17 +348,60 @@ struct ContentView: View {
 
     private var terminalPanel: some View {
         VStack(spacing: 0) {
+            statusStrip
             tabBar
             Divider().background(Color.white.opacity(0.05))
-            if let tid = activeTerminalId, let terminal = terminals[tid] {
-                terminalToolbar(for: tid, terminal: terminal)
-                IsolatedTerminalView(terminal: terminal)
-                    .id(tid)
-            } else {
-                emptyState
+            ZStack {
+                if let tid = activeTerminalId, let terminal = terminals[tid] {
+                    VStack(spacing: 0) {
+                        terminalToolbar(for: tid, terminal: terminal)
+                        IsolatedTerminalView(terminal: terminal)
+                            .id(tid)
+                    }
+                } else {
+                    emptyState
+                }
+                ReadOnlyToastOverlay(activeTerminalId: activeTerminalId, onEnableEditing: {
+                    if let tid = activeTerminalId, let t = terminals[tid] {
+                        t.setReadOnly(false)
+                    }
+                })
             }
         }
         .background(BG_DARKEST)
+    }
+
+    private var statusStrip: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                MinionDot(size: 14)
+                Text("MinionsCode")
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundColor(TEXT_PRIMARY)
+                    .tracking(0.3)
+            }
+            Spacer()
+            HStack(spacing: 10) {
+                statusBadge(label: "active", value: "\(manager.activeSessions)", tint: GOLD)
+                statusBadge(label: "tracked", value: "\(manager.sessions.count)", tint: TEXT_DIM)
+                statusBadge(label: "spent", value: fmtCost(manager.totalCost), tint: Color.orange)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(BG_DARK)
+    }
+
+    private func statusBadge(label: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(label.uppercased())
+                .font(.system(size: 8, weight: .bold))
+                .tracking(0.5)
+                .foregroundColor(.white.opacity(0.35))
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundColor(tint)
+        }
     }
 
     private var tabBar: some View {
@@ -387,11 +471,19 @@ struct ContentView: View {
     }
 
     private func closeTerminal(_ id: String) {
+        // Always confirm — protects against ⌘W misfire and hides the
+        // edge case where the user has work in progress.
+        pendingCloseId = id
+        showingCloseConfirm = true
+    }
+
+    private func reallyCloseTerminal(_ id: String) {
         terminals[id]?.terminate()
         terminals.removeValue(forKey: id)
         orderedTerminalIds.removeAll { $0 == id }
         if activeTerminalId == id {
             activeTerminalId = orderedTerminalIds.last
+            if let next = activeTerminalId, let t = terminals[next] { t.activate() }
         }
     }
 
@@ -558,6 +650,50 @@ struct IsolatedTerminalView: View {
     }
 }
 
+struct ReadOnlyToastOverlay: View {
+    let activeTerminalId: String?
+    let onEnableEditing: () -> Void
+    @State private var center = ReadOnlyToastCenter.shared
+
+    var body: some View {
+        VStack {
+            if let tid = activeTerminalId, center.visibleSessionId == tid {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
+                    Text("Read-only mode")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text("·")
+                        .foregroundColor(.white.opacity(0.3))
+                    Text("Press ⌘E or click to enable editing")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.7))
+                    Button("Enable") { onEnableEditing() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(Capsule().fill(Color(red: 1.0, green: 0.78, blue: 0.10).opacity(0.2)))
+                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.black.opacity(0.6))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                )
+                .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .padding(.top, 12)
+            }
+            Spacer()
+        }
+        .animation(.easeInOut(duration: 0.2), value: center.visibleSessionId)
+        .allowsHitTesting(center.visibleSessionId != nil)
+    }
+}
+
 struct CdFolderButton: View {
     let terminal: TerminalSession
 
@@ -622,30 +758,86 @@ struct ClaudeLaunchMenu: View {
     let terminal: TerminalSession
     @State private var showingPopover = false
     @State private var selectedModel: ClaudeModel = .auto
-    @State private var effortMax = false
-    @State private var bypassPermissions = false
-    @State private var resumeMode: ResumeMode = .none
+    @State private var effort: EffortLevel = .none
+    @State private var permissionMode: PermissionMode = .none
     @State private var dangerouslySkipPermissions = false
+    @State private var resumeMode: ResumeMode = .none
+    @State private var forkSession = false
     @State private var verbose = false
+    @State private var name: String = ""
+    @State private var addDirs: String = ""
+    @State private var worktreeEnabled = false
+    @State private var worktreeName: String = ""
     @State private var print: String = ""
 
     enum ClaudeModel: String, CaseIterable, Identifiable {
-        case auto, opus, sonnet, haiku
+        case auto, opus, opus47, sonnet, sonnet46, haiku, haiku45
         var id: String { rawValue }
         var label: String {
             switch self {
             case .auto: return "Default"
-            case .opus: return "Opus"
-            case .sonnet: return "Sonnet"
-            case .haiku: return "Haiku"
+            case .opus: return "opus"
+            case .opus47: return "opus-4-7"
+            case .sonnet: return "sonnet"
+            case .sonnet46: return "sonnet-4-6"
+            case .haiku: return "haiku"
+            case .haiku45: return "haiku-4-5"
             }
         }
         var flag: String? {
             switch self {
             case .auto: return nil
             case .opus: return "--model opus"
+            case .opus47: return "--model claude-opus-4-7"
             case .sonnet: return "--model sonnet"
+            case .sonnet46: return "--model claude-sonnet-4-6"
             case .haiku: return "--model haiku"
+            case .haiku45: return "--model claude-haiku-4-5"
+            }
+        }
+    }
+
+    enum EffortLevel: String, CaseIterable, Identifiable {
+        case none, low, medium, high, xhigh, max
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .none: return "Default"
+            case .low: return "low"
+            case .medium: return "medium"
+            case .high: return "high"
+            case .xhigh: return "xhigh"
+            case .max: return "max"
+            }
+        }
+        var flag: String? {
+            self == .none ? nil : "--effort \(rawValue)"
+        }
+    }
+
+    enum PermissionMode: String, CaseIterable, Identifiable {
+        case none, defaultMode, acceptEdits, auto, bypassPermissions, dontAsk, plan
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .none: return "Default"
+            case .defaultMode: return "default"
+            case .acceptEdits: return "acceptEdits"
+            case .auto: return "auto"
+            case .bypassPermissions: return "bypassPermissions"
+            case .dontAsk: return "dontAsk"
+            case .plan: return "plan"
+            }
+        }
+        var flag: String? {
+            switch self {
+            case .none: return nil
+            case .defaultMode: return "--permission-mode default"
+            case .acceptEdits: return "--permission-mode acceptEdits"
+            case .auto: return "--permission-mode auto"
+            case .bypassPermissions: return "--permission-mode bypassPermissions"
+            case .dontAsk: return "--permission-mode dontAsk"
+            case .plan: return "--permission-mode plan"
             }
         }
     }
@@ -656,8 +848,8 @@ struct ClaudeLaunchMenu: View {
         var label: String {
             switch self {
             case .none: return "None"
-            case .resume: return "Resume picker"
-            case .continueLast: return "Continue last"
+            case .resume: return "Resume"
+            case .continueLast: return "Continue"
             }
         }
         var flag: String? {
@@ -672,11 +864,23 @@ struct ClaudeLaunchMenu: View {
     var composedCommand: String {
         var parts = ["claude"]
         if let f = selectedModel.flag { parts.append(f) }
-        if effortMax { parts.append("--effort max") }
-        if bypassPermissions { parts.append("--permission-mode bypassPermissions") }
+        if let f = effort.flag { parts.append(f) }
+        if let f = permissionMode.flag { parts.append(f) }
         if dangerouslySkipPermissions { parts.append("--dangerously-skip-permissions") }
         if verbose { parts.append("--verbose") }
         if let f = resumeMode.flag { parts.append(f) }
+        if forkSession && resumeMode != .none { parts.append("--fork-session") }
+        if !name.trimmingCharacters(in: .whitespaces).isEmpty {
+            parts.append("--name \(name.shellQuoted())")
+        }
+        let dirs = addDirs.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        if !dirs.isEmpty {
+            parts.append("--add-dir " + dirs.map { $0.shellQuoted() }.joined(separator: " "))
+        }
+        if worktreeEnabled {
+            let trimmed = worktreeName.trimmingCharacters(in: .whitespaces)
+            parts.append(trimmed.isEmpty ? "--worktree" : "--worktree \(trimmed.shellQuoted())")
+        }
         if !print.trimmingCharacters(in: .whitespaces).isEmpty {
             parts.append("--print \(print.shellQuoted())")
         }
@@ -698,94 +902,154 @@ struct ClaudeLaunchMenu: View {
         .buttonStyle(.plain)
         .popover(isPresented: $showingPopover, arrowEdge: .top) {
             popoverContent
-                .frame(width: 360)
+                .frame(width: 540)
+                .frame(minHeight: 600, maxHeight: 720)
         }
     }
 
     private var popoverContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Image(systemName: "sparkles").foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
-                Text("Build a claude command").font(.system(size: 13, weight: .heavy))
-                Spacer()
-            }
-
-            // Model
-            VStack(alignment: .leading, spacing: 6) {
-                Text("MODEL").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).tracking(0.5)
-                Picker("", selection: $selectedModel) {
-                    ForEach(ClaudeModel.allCases) { m in Text(m.label).tag(m) }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Image(systemName: "sparkles").foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
+                    Text("Build a claude command").font(.system(size: 13, weight: .heavy))
+                    Spacer()
                 }
-                .pickerStyle(.segmented).labelsHidden()
-            }
 
-            // Flags
-            VStack(alignment: .leading, spacing: 4) {
-                Text("FLAGS").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).tracking(0.5)
-                Toggle(isOn: $effortMax) { Text("--effort max").font(.system(.body, design: .monospaced)) }
-                Toggle(isOn: $bypassPermissions) { Text("--permission-mode bypassPermissions").font(.system(.body, design: .monospaced)) }
-                Toggle(isOn: $dangerouslySkipPermissions) { Text("--dangerously-skip-permissions").font(.system(.body, design: .monospaced)) }
-                Toggle(isOn: $verbose) { Text("--verbose").font(.system(.body, design: .monospaced)) }
-            }
+                Group {
+                    section("MODEL") {
+                        Picker("", selection: $selectedModel) {
+                            ForEach(ClaudeModel.allCases) { m in Text(m.label).tag(m) }
+                        }
+                        .pickerStyle(.menu).labelsHidden()
+                    }
 
-            // Resume
-            VStack(alignment: .leading, spacing: 6) {
-                Text("RESUME").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).tracking(0.5)
-                Picker("", selection: $resumeMode) {
-                    ForEach(ResumeMode.allCases) { r in Text(r.label).tag(r) }
+                    section("EFFORT") {
+                        Picker("", selection: $effort) {
+                            ForEach(EffortLevel.allCases) { e in Text(e.label).tag(e) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden()
+                    }
+
+                    section("PERMISSION MODE") {
+                        Picker("", selection: $permissionMode) {
+                            ForEach(PermissionMode.allCases) { m in Text(m.label).tag(m) }
+                        }
+                        .pickerStyle(.menu).labelsHidden()
+                    }
+
+                    section("FLAGS") {
+                        Toggle(isOn: $dangerouslySkipPermissions) {
+                            Text("--dangerously-skip-permissions")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                        Toggle(isOn: $verbose) {
+                            Text("--verbose")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                    }
+
+                    section("RESUME") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $resumeMode) {
+                                ForEach(ResumeMode.allCases) { r in Text(r.label).tag(r) }
+                            }
+                            .pickerStyle(.segmented).labelsHidden()
+                            Toggle(isOn: $forkSession) {
+                                Text("--fork-session")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(resumeMode == .none ? .secondary : .primary)
+                            }
+                            .disabled(resumeMode == .none)
+                        }
+                    }
+
+                    section("NAME") {
+                        TextField("Display name (shown in /resume picker)", text: $name)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                    }
+
+                    section("WORKTREE") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle(isOn: $worktreeEnabled) {
+                                Text("--worktree (new git worktree)")
+                                    .font(.system(size: 11, design: .monospaced))
+                            }
+                            if worktreeEnabled {
+                                TextField("Optional name", text: $worktreeName)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 11))
+                            }
+                        }
+                    }
+
+                    section("ADDITIONAL DIRS (--add-dir)") {
+                        TextField("space-separated paths", text: $addDirs)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11, design: .monospaced))
+                    }
+
+                    section("ONE-SHOT --print") {
+                        TextField("Prompt for non-interactive run", text: $print)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11, design: .monospaced))
+                    }
                 }
-                .pickerStyle(.segmented).labelsHidden()
-            }
 
-            // One-shot --print
-            VStack(alignment: .leading, spacing: 4) {
-                Text("ONE-SHOT --print (optional)").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).tracking(0.5)
-                TextField("e.g. summarize this branch", text: $print)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
-            }
+                Divider()
 
-            Divider()
-
-            // Preview
-            VStack(alignment: .leading, spacing: 4) {
-                Text("COMMAND PREVIEW").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).tracking(0.5)
-                Text(composedCommand)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.4)))
-                    .textSelection(.enabled)
-            }
-
-            HStack {
-                Button("Reset") { reset() }
-                    .buttonStyle(.borderless)
-                Spacer()
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(composedCommand, forType: .string)
+                section("COMMAND PREVIEW") {
+                    Text(composedCommand)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.4)))
+                        .textSelection(.enabled)
                 }
-                Button("Run") {
-                    terminal.sendCommand(composedCommand)
-                    showingPopover = false
+
+                HStack {
+                    Button("Reset") { reset() }
+                        .buttonStyle(.borderless)
+                    Spacer()
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(composedCommand, forType: .string)
+                    }
+                    Button("Run") {
+                        terminal.sendCommand(composedCommand)
+                        showingPopover = false
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(red: 1.0, green: 0.78, blue: 0.10))
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .tint(Color(red: 1.0, green: 0.78, blue: 0.10))
             }
+            .padding(20)
         }
-        .padding(16)
+    }
+
+    @ViewBuilder
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).tracking(0.5)
+            content()
+        }
     }
 
     private func reset() {
         selectedModel = .auto
-        effortMax = false
-        bypassPermissions = false
+        effort = .none
+        permissionMode = .none
         dangerouslySkipPermissions = false
         verbose = false
         resumeMode = .none
+        forkSession = false
+        name = ""
+        addDirs = ""
+        worktreeEnabled = false
+        worktreeName = ""
         print = ""
     }
 }
@@ -979,13 +1243,19 @@ struct SessionCard: View {
     @Environment(\.uiScale) private var scale
     private var isActive: Bool { viewModel.activeId == session.id }
     private var isEditing: Bool { viewModel.editingId == session.id }
+    private var dimmed: Bool { !session.isRecentlyActive }
+
+    private var statusColor: Color {
+        if session.isAlive {
+            return session.status == "busy" ? Color(red: 1.0, green: 0.78, blue: 0.10) : Color.green
+        }
+        return session.isRecentlyActive ? Color.green.opacity(0.5) : Color.gray.opacity(0.35)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Circle()
-                    .fill(session.isAlive ? (session.status == "busy" ? Color(red: 1.0, green: 0.78, blue: 0.10) : Color.green) : Color.gray.opacity(0.4))
-                    .frame(width: 6, height: 6)
+                Circle().fill(statusColor).frame(width: 6, height: 6)
                 if isEditing {
                     TextField("Name", text: viewModel.nameInput, onCommit: { viewModel.onCommitRename(session) })
                         .textFieldStyle(.plain)
@@ -994,24 +1264,26 @@ struct SessionCard: View {
                 } else {
                     Text(session.name)
                         .scaledFont(11, weight: .semibold)
-                        .foregroundColor(.white.opacity(0.92))
+                        .foregroundColor(dimmed ? .white.opacity(0.45) : .white.opacity(0.92))
                         .lineLimit(1)
                 }
                 Spacer()
                 Text(fmtCost(session.cost))
                     .scaledFont(10, weight: .bold, design: .monospaced)
-                    .foregroundColor(Color.orange.opacity(0.85))
+                    .foregroundColor(dimmed ? .orange.opacity(0.5) : .orange.opacity(0.85))
             }
             HStack(spacing: 8) {
                 if let model = session.model {
                     Text(model.replacingOccurrences(of: "claude-", with: "")
                             .replacingOccurrences(of: "opus-4-7", with: "opus")
-                            .replacingOccurrences(of: "opus-4.7", with: "opus"))
-                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10).opacity(0.7))
+                            .replacingOccurrences(of: "opus-4.7", with: "opus")
+                            .replacingOccurrences(of: "sonnet-4-6", with: "sonnet")
+                            .replacingOccurrences(of: "haiku-4-5", with: "haiku"))
+                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.10).opacity(dimmed ? 0.4 : 0.7))
                 }
                 Text("\(session.usage.messageCount)msg")
-                if let started = session.startedAt {
-                    Text(fmtDuration(Date().timeIntervalSince(started)))
+                if let last = session.lastActivityAt {
+                    Text(relativeTime(last))
                 }
                 Spacer()
                 Text("⚡\(fmtPct(session.cacheHitRate))")
@@ -1019,6 +1291,17 @@ struct SessionCard: View {
             }
             .scaledFont(9, design: .monospaced)
             .foregroundColor(.white.opacity(0.32))
+
+            // Per-session token breakdown — only show if session has data
+            if session.usage.messageCount > 0 {
+                HStack(spacing: 6) {
+                    miniToken(label: "in", n: session.usage.totalInput, color: Color(red: 1.0, green: 0.78, blue: 0.10))
+                    miniToken(label: "out", n: session.usage.totalOutput, color: Color.purple.opacity(0.85))
+                    miniToken(label: "cR", n: session.usage.cacheRead, color: Color.green.opacity(0.7))
+                    miniToken(label: "cW", n: session.usage.cacheCreation, color: Color.orange.opacity(0.7))
+                }
+                .opacity(dimmed ? 0.5 : 1)
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(
@@ -1043,6 +1326,24 @@ struct SessionCard: View {
                 NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
             }
         }
+    }
+
+    @ViewBuilder
+    private func miniToken(label: String, n: Int, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Text(label).font(.system(size: 8)).foregroundColor(.white.opacity(0.3))
+            Text(fmtTokens(n)).font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundColor(color)
+        }
+        .padding(.horizontal, 4).padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.06)))
+    }
+
+    private func relativeTime(_ d: Date) -> String {
+        let s = -d.timeIntervalSinceNow
+        if s < 60 { return "now" }
+        if s < 3600 { return "\(Int(s / 60))m" }
+        if s < 86400 { return "\(Int(s / 3600))h" }
+        return "\(Int(s / 86400))d"
     }
 }
 
