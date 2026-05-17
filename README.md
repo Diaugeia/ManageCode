@@ -18,20 +18,34 @@ input fidelity (paste, mouse, ANSI, the works).
 
 ## Install
 
+One-liner (no Rust toolchain needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChengAoShen/MinionsCode/main/install.sh | bash
+```
+
+Downloads the prebuilt binary for your platform from
+[Releases](https://github.com/ChengAoShen/MinionsCode/releases) and drops it
+into `~/.local/bin/minionscode`. Set `INSTALL_DIR=/usr/local/bin` or
+`VERSION=v0.1.0` to override.
+
+Prebuilt platforms:
+
+- Linux x86_64
+- macOS x86_64 (Intel)
+- macOS aarch64 (Apple Silicon)
+
+Windows users: run inside WSL, or build from source.
+
+### Build from source
+
 ```bash
 git clone https://github.com/ChengAoShen/MinionsCode.git
 cd MinionsCode
-./install.sh                          # builds release + installs to ~/.local/bin/minionscode
+./build.sh                            # cargo build --release + install to ~/.local/bin
 ```
 
-Or manually:
-
-```bash
-cargo build --release
-cp target/release/minionscode ~/.local/bin/
-```
-
-Requires Rust 1.74+. Works on Linux, macOS, and WSL.
+Requires Rust 1.74+.
 
 ## Run
 
