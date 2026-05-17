@@ -3,6 +3,7 @@ mod app;
 mod models;
 mod notifications;
 mod scanner;
+mod tmux;
 mod ui;
 mod watcher;
 
@@ -391,6 +392,9 @@ fn handle_browse(
         KeyCode::Char('E') => {
             app.mode = Mode::Confirm(ConfirmAction::DeleteEmpty);
         }
+        KeyCode::Char('K') => {
+            app.ask_kill_tmux();
+        }
         _ => {}
     }
     None
@@ -483,8 +487,81 @@ fn find_claude_binary() -> Option<String> {
 }
 
 fn run_exec(pending: PendingExec) {
-    // Clear screen so the child gets a clean terminal.
     let _ = io::stdout().flush();
+    // tmux mode: only when tmux is installed AND we're not already inside tmux
+    // (we don't try to nest — nested tmux sessions are a UX trap).
+    let use_tmux = tmux::available() && !tmux::inside_tmux();
+    if use_tmux {
+        run_exec_tmux(pending);
+    } else {
+        run_exec_direct(pending);
+    }
+}
+
+fn run_exec_tmux(pending: PendingExec) {
+    match pending {
+        PendingExec::Resume { id, cwd } => {
+            let Some(claude) = find_claude_binary() else {
+                eprintln!("claude binary not found");
+                pause();
+                return;
+            };
+            let name = tmux::resume_name(&id);
+            let cmd = tmux::join_command(&[&claude, "--resume", &id]);
+            tmux::ensure_session(&name, &cwd, &cmd);
+            print_attach_hint(&name);
+            tmux::attach(&name);
+        }
+        PendingExec::NewClaude { cwd } => {
+            let Some(claude) = find_claude_binary() else {
+                eprintln!("claude binary not found");
+                pause();
+                return;
+            };
+            let name = tmux::new_claude_name();
+            let cmd = tmux::sh_quote(&claude);
+            tmux::ensure_session(&name, &cwd, &cmd);
+            print_attach_hint(&name);
+            tmux::attach(&name);
+        }
+        PendingExec::NewShell { cwd } => {
+            let name = tmux::new_shell_name();
+            tmux::ensure_session_shell(&name, &cwd);
+            print_attach_hint(&name);
+            tmux::attach(&name);
+        }
+        PendingExec::Custom { cwd, args } => {
+            let Some(claude) = find_claude_binary() else {
+                eprintln!("claude binary not found");
+                pause();
+                return;
+            };
+            let name = tmux::new_claude_name();
+            let mut parts: Vec<&str> = Vec::with_capacity(1 + args.len());
+            parts.push(&claude);
+            for a in &args {
+                parts.push(a);
+            }
+            let cmd = tmux::join_command(&parts);
+            tmux::ensure_session(&name, &cwd, &cmd);
+            print_attach_hint(&name);
+            tmux::attach(&name);
+        }
+    }
+}
+
+fn print_attach_hint(name: &str) {
+    // One-line hint before tmux takes the screen — visible for a moment so
+    // first-time users learn how to detach. tmux's own banner clears it.
+    let _ = writeln!(
+        io::stdout(),
+        "→ tmux session {}  (Ctrl-b d to detach back to MinionsCode)",
+        name
+    );
+    let _ = io::stdout().flush();
+}
+
+fn run_exec_direct(pending: PendingExec) {
     match pending {
         PendingExec::Resume { id, cwd } => {
             if let Some(claude) = find_claude_binary() {

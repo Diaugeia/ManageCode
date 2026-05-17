@@ -7,6 +7,7 @@ use crate::ai;
 use crate::models::SessionInfo;
 use crate::notifications::Notifier;
 use crate::scanner;
+use crate::tmux;
 use crate::watcher;
 
 /// One row in the visible list — either a project header or a session row.
@@ -167,6 +168,7 @@ fn bool_label(b: bool) -> String {
 pub enum ConfirmAction {
     DeleteJunk,
     DeleteEmpty,
+    KillTmux(String, String), // (tmux session name, claude session id) — for the toast
 }
 
 impl ConfirmAction {
@@ -174,6 +176,9 @@ impl ConfirmAction {
         match self {
             ConfirmAction::DeleteJunk => "Delete junk sessions? (tmp / no messages)",
             ConfirmAction::DeleteEmpty => "Delete sessions with no messages?",
+            ConfirmAction::KillTmux(_, _) => {
+                "Kill the background tmux session? (forces claude to exit)"
+            }
         }
     }
 }
@@ -197,6 +202,9 @@ pub struct App {
     pub auto_name_progress: (usize, usize), // (done, total)
     pub notifier: Notifier,
     pub watcher_active: bool,
+    pub tmux_available: bool,
+    pub tmux_backed: HashSet<String>,
+    last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
     rx: mpsc::Receiver<Vec<SessionInfo>>,
@@ -245,6 +253,9 @@ impl App {
             auto_name_progress: (0, 0),
             notifier: Notifier::new(true),
             watcher_active,
+            tmux_available: tmux::available(),
+            tmux_backed: HashSet::new(),
+            last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
             rx,
@@ -304,6 +315,11 @@ impl App {
             scanner::refresh_live_status(&mut self.sessions);
             self.notifier.observe(&self.sessions);
             self.last_live_sweep = Instant::now();
+        }
+        // Refresh the set of background tmux sessions every ~2s.
+        if self.tmux_available && self.last_tmux_refresh.elapsed() >= Duration::from_secs(2) {
+            self.refresh_tmux_backed();
+            self.last_tmux_refresh = Instant::now();
         }
         // Fallback full scan. Faster when watcher couldn't attach.
         let fallback = if self.watcher_active {
@@ -570,9 +586,49 @@ impl App {
                     self.clamp_selection();
                     self.flash(format!("deleted {} empty session(s)", n));
                 }
+                ConfirmAction::KillTmux(tmux_name, sid) => {
+                    let ok = tmux::kill_session(&tmux_name);
+                    if ok {
+                        self.tmux_backed.remove(&sid);
+                        self.flash(format!("killed tmux session {}", tmux_name));
+                    } else {
+                        self.flash(format!("failed to kill {}", tmux_name));
+                    }
+                }
             }
         }
         self.mode = Mode::Browse;
+    }
+
+    /// Reconcile our `tmux_backed` set with what tmux actually has alive.
+    fn refresh_tmux_backed(&mut self) {
+        let alive = tmux::list_managed_set();
+        // Keep only Claude session IDs whose corresponding tmux session is alive.
+        self.tmux_backed.clear();
+        for s in &self.sessions {
+            let name = tmux::resume_name(&s.id);
+            if alive.contains(&name) {
+                self.tmux_backed.insert(s.id.clone());
+            }
+        }
+    }
+
+    pub fn ask_kill_tmux(&mut self) {
+        let Some(s) = self.selected_session() else {
+            self.flash("no selection");
+            return;
+        };
+        if !self.tmux_backed.contains(&s.id) {
+            self.flash("no tmux session for this entry");
+            return;
+        }
+        let name = tmux::resume_name(&s.id);
+        let id = s.id.clone();
+        self.mode = Mode::Confirm(ConfirmAction::KillTmux(name, id));
+    }
+
+    pub fn tmux_count(&self) -> usize {
+        self.tmux_backed.len()
     }
 
     pub fn total_cost(&self) -> f64 {

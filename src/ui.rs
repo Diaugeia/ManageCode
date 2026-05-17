@@ -190,6 +190,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             format!("{} active", active),
             Style::default().fg(LIVE),
         ));
+        let tmux_n = app.tmux_count();
+        if tmux_n > 0 {
+            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(Span::styled(
+                format!("▶ {} tmux", tmux_n),
+                Style::default().fg(Color::Rgb(0x6F, 0xD9, 0xCB)),
+            ));
+        }
         spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
         spans.push(Span::styled(
             format!("{} total", count),
@@ -328,6 +336,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             Row::Session(real_idx) => {
                 let session = &app.sessions[*real_idx];
                 let selected = selected_session_real == Some(*real_idx);
+                let tmux_backed = app.tmux_backed.contains(&session.id);
                 draw_session_row(
                     f,
                     Rect {
@@ -338,6 +347,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     },
                     session,
                     selected,
+                    tmux_backed,
                     tier,
                 );
             }
@@ -378,10 +388,20 @@ fn draw_session_row(
     area: Rect,
     session: &SessionInfo,
     selected: bool,
+    tmux_backed: bool,
     tier: Layoutness,
 ) {
-    let bullet = if session.is_alive { "●" } else { "○" };
-    let bullet_color = if session.is_alive {
+    let bullet = if tmux_backed {
+        "▶"
+    } else if session.is_alive {
+        "●"
+    } else {
+        "○"
+    };
+    let bullet_color = if tmux_backed {
+        // Distinct teal-ish color so backgrounded tmux sessions pop visually.
+        Color::Rgb(0x6F, 0xD9, 0xCB)
+    } else if session.is_alive {
         match session.status.as_str() {
             "busy" => WARN,
             "thinking" => Color::Rgb(0xB8, 0xA0, 0xFF),
@@ -450,7 +470,15 @@ fn draw_session_row(
         return;
     }
     let ago = ago_string(session.last_activity_at.as_ref());
-    let status_text = if session.is_alive {
+    let status_text = if tmux_backed && !session.is_alive {
+        "▶ tmux idle".to_string()
+    } else if tmux_backed {
+        match session.status.as_str() {
+            "busy" => "▶ tmux busy".to_string(),
+            "thinking" => "▶ tmux thinking".to_string(),
+            _ => "▶ tmux idle".to_string(),
+        }
+    } else if session.is_alive {
         match session.status.as_str() {
             "busy" => "● busy",
             "thinking" => "● thinking",
@@ -845,7 +873,7 @@ fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
-    let modal = centered(area, 62, 30);
+    let modal = centered(area, 64, 36);
     f.render_widget(Clear, modal);
     let block = panel_block("Help", true);
     let inner = block.inner(modal);
@@ -871,6 +899,14 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         help_row("N", "new claude (with options)"),
         help_row("s", "new shell in cwd"),
         help_row("r", "rename"),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "tmux multi-session",
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        )),
+        help_row("Ctrl-b d", "detach (inside a tmux session)"),
+        help_row("⏎", "re-attach an existing ▶ background session"),
+        help_row("K", "kill the background tmux session"),
         Line::raw(""),
         Line::from(Span::styled(
             "search & AI",
