@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::thread;
@@ -6,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::ai;
 use crate::models::SessionInfo;
 use crate::notifications::Notifier;
+use crate::pty::{TermSession, TerminalSpec};
 use crate::scanner;
 use crate::tmux;
 use crate::watcher;
@@ -30,6 +32,8 @@ pub enum Mode {
     Confirm(ConfirmAction),
     Help,
     Launch(LaunchForm),
+    /// An embedded terminal pane is active and receiving keystrokes.
+    Terminal,
 }
 
 #[derive(Clone)]
@@ -204,6 +208,14 @@ pub struct App {
     pub watcher_active: bool,
     pub tmux_available: bool,
     pub tmux_backed: HashSet<String>,
+    /// The live embedded terminal, if one is open.
+    pub term: Option<TermSession>,
+    /// A terminal requested but not yet spawned (spawned by the run loop once
+    /// the pane size is known).
+    pub pending_terminal: Option<TerminalSpec>,
+    /// Inner (content) size of the terminal pane in (rows, cols), written by the
+    /// renderer each frame and read by the run loop to resize the PTY.
+    pub term_size: Cell<(u16, u16)>,
     last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
@@ -255,6 +267,9 @@ impl App {
             watcher_active,
             tmux_available: tmux::available(),
             tmux_backed: HashSet::new(),
+            term: None,
+            pending_terminal: None,
+            term_size: Cell::new((24, 80)),
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
@@ -625,6 +640,44 @@ impl App {
         let name = tmux::resume_name(&s.id);
         let id = s.id.clone();
         self.mode = Mode::Confirm(ConfirmAction::KillTmux(name, id));
+    }
+
+    /// Queue an embedded terminal to open; the run loop spawns it once it knows
+    /// the pane size. Focuses the terminal pane immediately.
+    pub fn request_terminal(&mut self, spec: TerminalSpec) {
+        self.close_terminal();
+        self.pending_terminal = Some(spec);
+        self.mode = Mode::Terminal;
+    }
+
+    /// Tear down the embedded terminal (does not kill background tmux sessions)
+    /// and return to Browse.
+    pub fn close_terminal(&mut self) {
+        self.term = None;
+        self.pending_terminal = None;
+        if matches!(self.mode, Mode::Terminal) {
+            self.mode = Mode::Browse;
+        }
+    }
+
+    /// Move focus from the terminal pane back to the sidebar without tearing the
+    /// terminal down — it keeps running and stays visible on the right.
+    pub fn blur_terminal(&mut self) {
+        if matches!(self.mode, Mode::Terminal) {
+            self.mode = Mode::Browse;
+        }
+    }
+
+    /// Give keyboard focus to the (already open) terminal pane.
+    pub fn focus_terminal(&mut self) {
+        if self.has_terminal() {
+            self.mode = Mode::Terminal;
+        }
+    }
+
+    /// Is a terminal pane currently on screen (open or about to open)?
+    pub fn has_terminal(&self) -> bool {
+        self.term.is_some() || self.pending_terminal.is_some()
     }
 
     pub fn tmux_count(&self) -> usize {

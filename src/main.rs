@@ -2,6 +2,7 @@ mod ai;
 mod app;
 mod models;
 mod notifications;
+mod pty;
 mod scanner;
 mod tmux;
 mod ui;
@@ -20,6 +21,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{App, ConfirmAction, LaunchForm, Mode, PendingExec};
+use crate::pty::{TermSession, TerminalSpec};
 
 fn parse_args() -> Args {
     let mut a = Args::default();
@@ -175,7 +177,10 @@ fn enter_tui() -> Result<()> {
 
 fn leave_tui<B: ratatui::backend::Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
-) -> Result<()> {
+) -> Result<()>
+where
+    <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
+{
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
@@ -185,11 +190,28 @@ fn leave_tui<B: ratatui::backend::Backend + std::io::Write>(
 fn run_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<ExitRequest> {
-    let tick = Duration::from_millis(120);
+) -> Result<ExitRequest>
+where
+    <B as ratatui::backend::Backend>::Error: std::error::Error + Send + Sync + 'static,
+{
     loop {
+        // Keep the embedded terminal sized to its pane and alive. The pane size
+        // is whatever the renderer measured last frame (see app.term_size).
+        if app.has_terminal() {
+            let (rows, cols) = app.term_size.get();
+            service_terminal(app, rows, cols);
+        }
+
         terminal.draw(|f| ui::draw(f, app))?;
         app.tick();
+
+        // The embedded terminal updates asynchronously, so poll faster while it
+        // is on screen for a responsive feel.
+        let tick = if app.has_terminal() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(120)
+        };
 
         if event::poll(tick)? {
             if let Event::Key(key) = event::read()? {
@@ -204,11 +226,43 @@ fn run_loop<B: ratatui::backend::Backend>(
     }
 }
 
+/// Spawn a queued terminal once the pane size is known, keep it resized, and
+/// drop it when the child exits.
+fn service_terminal(app: &mut App, rows: u16, cols: u16) {
+    if app.term.is_none() {
+        if let Some(spec) = app.pending_terminal.take() {
+            let cmd = spec.build_command();
+            match TermSession::spawn(cmd, rows, cols, spec.title.clone()) {
+                Ok(t) => app.term = Some(t),
+                Err(e) => {
+                    app.flash(format!("terminal failed: {e}"));
+                    app.close_terminal();
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(t) = app.term.as_mut() {
+        t.resize(rows, cols);
+        if !t.is_alive() {
+            app.close_terminal();
+            app.kick_scan();
+        }
+    }
+}
+
 fn handle_key(
     app: &mut App,
     code: KeyCode,
     mods: KeyModifiers,
 ) -> Option<ExitRequest> {
+    // Terminal mode swallows ALL keys (including Ctrl-C, which must reach the
+    // child) except the escape prefix. Checked before the global Ctrl-C quit.
+    if matches!(app.mode, Mode::Terminal) {
+        handle_terminal(app, code, mods);
+        return None;
+    }
+
     // Ctrl-C always quits, regardless of mode.
     if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
         return Some(ExitRequest::Quit);
@@ -235,6 +289,21 @@ fn handle_key(
             None
         }
         Mode::Launch(_) => handle_launch(app, code),
+        // Reached only via the early return above; arm kept for exhaustiveness.
+        Mode::Terminal => None,
+    }
+}
+
+/// Route keys to the embedded terminal. The escape prefix (hardcoded `Ctrl-a`
+/// for now; configurable in M4) returns focus to the sidebar without killing
+/// the session.
+fn handle_terminal(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('a') {
+        app.blur_terminal();
+        return;
+    }
+    if let Some(t) = app.term.as_mut() {
+        t.send_key(code, mods);
     }
 }
 
@@ -319,7 +388,18 @@ fn handle_browse(
         KeyCode::Char('s') => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
-                return Some(ExitRequest::Exec(PendingExec::NewShell { cwd }));
+                app.request_terminal(TerminalSpec {
+                    cwd,
+                    argv: vec![],
+                    title: "shell".into(),
+                });
+            }
+        }
+        // vim-style: move focus into the terminal pane (insert). No-op unless a
+        // terminal is open.
+        KeyCode::Char('i') | KeyCode::Char('l') => {
+            if app.has_terminal() {
+                app.focus_terminal();
             }
         }
         KeyCode::Char('/') => {

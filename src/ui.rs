@@ -1,11 +1,12 @@
 use chrono::Local;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Gauge, Padding, Paragraph, Wrap},
     Frame,
 };
+use tui_term::widget::PseudoTerminal;
 
 use crate::app::{App, LaunchForm, Mode, Row};
 use crate::models::{model_short, short_path, SessionInfo};
@@ -66,25 +67,36 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, layout[0], app, tier);
 
-    match tier {
-        Layoutness::Wide => {
-            let body = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(45), Constraint::Min(40)])
-                .split(layout[1]);
-            draw_session_list(f, body[0], app, tier);
-            draw_detail(f, body[1], app, tier);
-        }
-        Layoutness::Stacked => {
-            let body = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(60), Constraint::Min(8)])
-                .split(layout[1]);
-            draw_session_list(f, body[0], app, tier);
-            draw_detail(f, body[1], app, tier);
-        }
-        Layoutness::Narrow => {
-            draw_session_list(f, layout[1], app, tier);
+    if app.has_terminal() {
+        // Sidebar (session list) + live embedded terminal.
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(32), Constraint::Min(40)])
+            .split(layout[1]);
+        let term_focused = matches!(app.mode, Mode::Terminal);
+        draw_session_list(f, body[0], app, Layoutness::Narrow);
+        draw_terminal_pane(f, body[1], app, term_focused);
+    } else {
+        match tier {
+            Layoutness::Wide => {
+                let body = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(45), Constraint::Min(40)])
+                    .split(layout[1]);
+                draw_session_list(f, body[0], app, tier);
+                draw_detail(f, body[1], app, tier);
+            }
+            Layoutness::Stacked => {
+                let body = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(60), Constraint::Min(8)])
+                    .split(layout[1]);
+                draw_session_list(f, body[0], app, tier);
+                draw_detail(f, body[1], app, tier);
+            }
+            Layoutness::Narrow => {
+                draw_session_list(f, layout[1], app, tier);
+            }
         }
     }
 
@@ -98,6 +110,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Confirm(_) => draw_confirm_overlay(f, area, app),
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
         Mode::Browse => {}
+        // Handled inline by the sidebar+terminal layout; no modal overlay.
+        Mode::Terminal => {}
     }
 
     if let Some((msg, _)) = &app.message {
@@ -731,9 +745,35 @@ fn ago_string(t: Option<&chrono::DateTime<chrono::Local>>) -> String {
     t.format("%Y-%m-%d").to_string()
 }
 
+fn draw_terminal_pane(f: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let title = app
+        .term
+        .as_ref()
+        .map(|t| t.title.clone())
+        .unwrap_or_else(|| "terminal".into());
+    let block = panel_block(&title, focused);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Report the pane's content size so the run loop can resize the PTY to match.
+    app.term_size.set((inner.height.max(1), inner.width.max(1)));
+
+    match &app.term {
+        Some(t) => {
+            let screen = t.screen();
+            f.render_widget(PseudoTerminal::new(&screen), inner);
+        }
+        None => {
+            let p = Paragraph::new(Span::styled("starting…", Style::default().fg(MUTED)))
+                .alignment(Alignment::Center);
+            f.render_widget(p, inner);
+        }
+    }
+}
+
 fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     let narrow = matches!(tier, Layoutness::Narrow);
-    let hints: Vec<(&str, &str)> = match app.mode {
+    let mut hints: Vec<(&str, &str)> = match app.mode {
         Mode::Browse if narrow => vec![
             ("⏎", "resume"),
             ("n", "claude"),
@@ -756,7 +796,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         Mode::Rename => vec![("⏎", "save"), ("esc", "cancel")],
         Mode::Help | Mode::Confirm(_) => vec![("esc", "close")],
         Mode::Launch(_) => vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")],
+        // Terminal pane focused: keys go to the child; the prefix returns focus.
+        Mode::Terminal => vec![("Ctrl-a", "focus list"), ("keys", "→ terminal")],
     };
+
+    // When a terminal is open but the sidebar is focused, advertise how to jump in.
+    if matches!(app.mode, Mode::Browse) && app.has_terminal() {
+        hints.insert(0, ("i", "terminal"));
+    }
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for (i, (k, v)) in hints.iter().enumerate() {
