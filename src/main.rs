@@ -203,7 +203,7 @@ where
         // Keep the embedded terminal sized to its pane and alive. The pane size
         // is whatever the renderer measured last frame (see app.term_size).
         if app.has_terminal() {
-            let (rows, cols) = app.term_size.get();
+            let (_x, _y, cols, rows) = app.term_area.get();
             service_terminal(app, rows, cols);
         }
 
@@ -219,13 +219,17 @@ where
         };
 
         if event::poll(tick)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if let Some(req) = handle_key(app, key.code, key.modifiers) {
+                        return Ok(req);
+                    }
                 }
-                if let Some(req) = handle_key(app, key.code, key.modifiers) {
-                    return Ok(req);
-                }
+                Event::Mouse(me) => handle_mouse(app, me),
+                _ => {}
             }
         }
     }
@@ -313,6 +317,39 @@ fn handle_terminal(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     }
     if let Some(t) = app.term.as_mut() {
         t.send_key(code, mods);
+    }
+}
+
+/// Mouse routing: forward to the embedded terminal when it's focused and the
+/// pointer is over the pane; in the sidebar, the wheel moves the selection and
+/// a click on the terminal pane focuses it.
+fn handle_mouse(app: &mut App, me: crossterm::event::MouseEvent) {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+
+    let (px, py, pw, ph) = app.term_area.get();
+    let over_pane = app.has_terminal()
+        && me.column >= px
+        && me.column < px.saturating_add(pw)
+        && me.row >= py
+        && me.row < py.saturating_add(ph);
+
+    match app.mode {
+        Mode::Terminal => {
+            if over_pane {
+                let col = me.column - px + 1;
+                let row = me.row - py + 1;
+                if let Some(t) = app.term.as_mut() {
+                    t.send_mouse(&me, col, row);
+                }
+            }
+        }
+        Mode::Browse => match me.kind {
+            K::ScrollDown => app.move_selection(1),
+            K::ScrollUp => app.move_selection(-1),
+            K::Down(MouseButton::Left) if over_pane => app.focus_terminal(),
+            _ => {}
+        },
+        _ => {}
     }
 }
 

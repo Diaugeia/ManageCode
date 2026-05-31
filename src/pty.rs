@@ -8,9 +8,9 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEvent};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use vt100::Parser;
+use vt100::{MouseProtocolEncoding, MouseProtocolMode, Parser};
 
 /// How many lines of scrollback the vt100 parser retains.
 const SCROLLBACK: usize = 2000;
@@ -114,6 +114,22 @@ impl TermSession {
         }
     }
 
+    /// Forward a mouse event (pane-relative, 1-based col/row), honoring the
+    /// mouse tracking mode/encoding the child requested. No-op when the child
+    /// isn't tracking the mouse.
+    pub fn send_mouse(&mut self, ev: &MouseEvent, col: u16, row: u16) {
+        let (mode, encoding) = match self.parser.read() {
+            Ok(p) => (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+            ),
+            Err(_) => return,
+        };
+        if let Some(bytes) = encode_mouse(mode, encoding, ev, col, row) {
+            self.write_bytes(&bytes);
+        }
+    }
+
     /// Has the child exited?
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
@@ -179,6 +195,90 @@ pub fn encode_key(code: KeyCode, mods: KeyModifiers) -> Option<Vec<u8>> {
         _ => return None,
     };
     Some(bytes)
+}
+
+/// Encode a mouse event into the bytes the child expects, given the mouse
+/// tracking `mode`/`encoding` it requested (read from the vt100 screen).
+/// Returns `None` when the child isn't tracking or the event is irrelevant.
+pub fn encode_mouse(
+    mode: MouseProtocolMode,
+    encoding: MouseProtocolEncoding,
+    ev: &MouseEvent,
+    col: u16,
+    row: u16,
+) -> Option<Vec<u8>> {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+
+    if matches!(mode, MouseProtocolMode::None) {
+        return None;
+    }
+
+    let btn = |b: MouseButton| -> u16 {
+        match b {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+        }
+    };
+
+    // (button code, is_press) — press selects the SGR final byte 'M' vs 'm'.
+    let (mut code, press) = match ev.kind {
+        K::Down(b) => (btn(b), true),
+        K::Up(b) => {
+            if matches!(mode, MouseProtocolMode::Press) {
+                return None;
+            }
+            (btn(b), false)
+        }
+        K::Drag(b) => {
+            if !matches!(
+                mode,
+                MouseProtocolMode::ButtonMotion | MouseProtocolMode::AnyMotion
+            ) {
+                return None;
+            }
+            (btn(b) + 32, true)
+        }
+        K::Moved => {
+            if !matches!(mode, MouseProtocolMode::AnyMotion) {
+                return None;
+            }
+            (3 + 32, true)
+        }
+        K::ScrollUp => (64, true),
+        K::ScrollDown => (65, true),
+        K::ScrollLeft => (66, true),
+        K::ScrollRight => (67, true),
+    };
+
+    if ev.modifiers.contains(KeyModifiers::SHIFT) {
+        code += 4;
+    }
+    if ev.modifiers.contains(KeyModifiers::ALT) {
+        code += 8;
+    }
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        code += 16;
+    }
+
+    match encoding {
+        MouseProtocolEncoding::Sgr => {
+            let f = if press { 'M' } else { 'm' };
+            Some(format!("\x1b[<{};{};{}{}", code, col, row, f).into_bytes())
+        }
+        // Legacy X10/UTF-8: press-only, every field offset by 32.
+        _ => {
+            let cb = if press { code } else { 3 };
+            Some(vec![
+                0x1b,
+                b'[',
+                b'M',
+                (cb + 32).min(255) as u8,
+                (col + 32).min(255) as u8,
+                (row + 32).min(255) as u8,
+            ])
+        }
+    }
 }
 
 /// What to launch in a freshly-opened embedded terminal. `argv` empty means the

@@ -216,9 +216,9 @@ pub struct App {
     /// A terminal requested but not yet spawned (spawned by the run loop once
     /// the pane size is known).
     pub pending_terminal: Option<TerminalSpec>,
-    /// Inner (content) size of the terminal pane in (rows, cols), written by the
-    /// renderer each frame and read by the run loop to resize the PTY.
-    pub term_size: Cell<(u16, u16)>,
+    /// Inner content rect of the terminal pane as (x, y, cols, rows), written by
+    /// the renderer each frame; used to resize the PTY and map mouse coordinates.
+    pub term_area: Cell<(u16, u16, u16, u16)>,
     /// User configuration (escape prefix, etc.).
     pub config: Config,
     /// Editing buffer for the settings overlay.
@@ -276,7 +276,7 @@ impl App {
             tmux_backed: HashSet::new(),
             term: None,
             pending_terminal: None,
-            term_size: Cell::new((24, 80)),
+            term_area: Cell::new((0, 0, 80, 24)),
             config: crate::config::load(),
             settings_input: String::new(),
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),

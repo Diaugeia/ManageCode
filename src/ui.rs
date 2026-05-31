@@ -757,7 +757,8 @@ fn draw_terminal_pane(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     f.render_widget(block, area);
 
     // Report the pane's content size so the run loop can resize the PTY to match.
-    app.term_size.set((inner.height.max(1), inner.width.max(1)));
+    app.term_area
+        .set((inner.x, inner.y, inner.width.max(1), inner.height.max(1)));
 
     match &app.term {
         Some(t) => {
