@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod config;
 mod models;
 mod notifications;
 mod pty;
@@ -8,7 +9,7 @@ mod tmux;
 mod ui;
 mod watcher;
 
-use std::io::{self, Write};
+use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -281,6 +282,10 @@ fn handle_key(
             None
         }
         Mode::Launch(_) => handle_launch(app, code),
+        Mode::Settings => {
+            handle_settings(app, code);
+            None
+        }
         // Reached only via the early return above; arm kept for exhaustiveness.
         Mode::Terminal => None,
     }
@@ -290,7 +295,7 @@ fn handle_key(
 /// for now; configurable in M4) returns focus to the sidebar without killing
 /// the session.
 fn handle_terminal(app: &mut App, code: KeyCode, mods: KeyModifiers) {
-    if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('a') {
+    if app.config.escape_prefix.matches(code, mods) {
         app.blur_terminal();
         return;
     }
@@ -435,6 +440,9 @@ fn handle_browse(
         KeyCode::Char('?') => {
             app.mode = Mode::Help;
         }
+        KeyCode::Char(':') => {
+            app.open_settings();
+        }
         KeyCode::Char('\\') => {
             // Prompt-less AI search: use current filter buffer as the query.
             if app.filter.is_empty() {
@@ -526,6 +534,39 @@ fn handle_confirm(app: &mut App, code: KeyCode) {
         }
         KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
             app.mode = Mode::Browse;
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.settings_input.clear();
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Enter => match config::KeySpec::parse(&app.settings_input) {
+            Ok(spec) if spec.is_reserved() => {
+                app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
+            }
+            Ok(spec) => {
+                app.config.escape_prefix = spec;
+                match config::save(&app.config) {
+                    Ok(()) => app.flash("prefix saved"),
+                    Err(e) => app.flash(format!("save failed: {e}")),
+                }
+                app.settings_input.clear();
+                app.mode = Mode::Browse;
+            }
+            Err(e) => app.flash(format!("invalid key: {e}")),
+        },
+        KeyCode::Backspace => {
+            app.settings_input.pop();
+        }
+        KeyCode::Char(c) => {
+            if app.settings_input.chars().count() < 24 {
+                app.settings_input.push(c);
+            }
         }
         _ => {}
     }

@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::ai;
+use crate::config::Config;
 use crate::models::SessionInfo;
 use crate::notifications::Notifier;
 use crate::pty::{TermSession, TerminalSpec};
@@ -34,6 +35,8 @@ pub enum Mode {
     Launch(LaunchForm),
     /// An embedded terminal pane is active and receiving keystrokes.
     Terminal,
+    /// The settings overlay is open.
+    Settings,
 }
 
 #[derive(Clone)]
@@ -216,6 +219,10 @@ pub struct App {
     /// Inner (content) size of the terminal pane in (rows, cols), written by the
     /// renderer each frame and read by the run loop to resize the PTY.
     pub term_size: Cell<(u16, u16)>,
+    /// User configuration (escape prefix, etc.).
+    pub config: Config,
+    /// Editing buffer for the settings overlay.
+    pub settings_input: String,
     last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
@@ -270,6 +277,8 @@ impl App {
             term: None,
             pending_terminal: None,
             term_size: Cell::new((24, 80)),
+            config: crate::config::load(),
+            settings_input: String::new(),
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
@@ -678,6 +687,12 @@ impl App {
     /// Is a terminal pane currently on screen (open or about to open)?
     pub fn has_terminal(&self) -> bool {
         self.term.is_some() || self.pending_terminal.is_some()
+    }
+
+    /// Open the settings overlay, seeding the editor with the current prefix.
+    pub fn open_settings(&mut self) {
+        self.settings_input = self.config.escape_prefix.label();
+        self.mode = Mode::Settings;
     }
 
     pub fn tmux_count(&self) -> usize {

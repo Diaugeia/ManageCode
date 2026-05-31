@@ -125,15 +125,8 @@ pub fn ensure_session_shell(name: &str, cwd: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Attach to a tmux session, taking over the current terminal until the user
-/// detaches (`Ctrl-b d`) or the session exits.
-pub fn attach(name: &str) -> bool {
-    Command::new("tmux")
-        .args(["attach-session", "-t", name])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
+// The old full-screen `attach` helper was removed — sessions are now attached
+// to inside an embedded PTY pane (see main::attach_spec).
 
 /// Shell-escape a single argument so it survives one round of sh parsing
 /// (what tmux applies to the trailing command string).

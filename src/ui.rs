@@ -109,6 +109,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help_overlay(f, area),
         Mode::Confirm(_) => draw_confirm_overlay(f, area, app),
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
+        Mode::Settings => draw_settings_overlay(f, area, app),
         Mode::Browse => {}
         // Handled inline by the sidebar+terminal layout; no modal overlay.
         Mode::Terminal => {}
@@ -771,7 +772,37 @@ fn draw_terminal_pane(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     }
 }
 
+fn draw_terminal_footer(f: &mut Frame, area: Rect, app: &App) {
+    let prefix = app.config.escape_prefix.label();
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(GOLD_DIM))
+        .style(Style::default().bg(BG));
+    f.render_widget(block, area);
+    let line = Line::from(vec![
+        Span::styled(prefix, Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+        Span::styled(" focus list", Style::default().fg(MUTED)),
+        Span::styled("  ·  ", Style::default().fg(GOLD_DIM)),
+        Span::styled("keys", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+        Span::styled(" → terminal", Style::default().fg(MUTED)),
+    ]);
+    f.render_widget(
+        Paragraph::new(line),
+        Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: 1,
+        },
+    );
+}
+
 fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
+    // Terminal pane focused: a dedicated footer shows the configured prefix.
+    if matches!(app.mode, Mode::Terminal) {
+        draw_terminal_footer(f, area, app);
+        return;
+    }
     let narrow = matches!(tier, Layoutness::Narrow);
     let mut hints: Vec<(&str, &str)> = match app.mode {
         Mode::Browse if narrow => vec![
@@ -796,8 +827,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         Mode::Rename => vec![("⏎", "save"), ("esc", "cancel")],
         Mode::Help | Mode::Confirm(_) => vec![("esc", "close")],
         Mode::Launch(_) => vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")],
-        // Terminal pane focused: keys go to the child; the prefix returns focus.
-        Mode::Terminal => vec![("Ctrl-a", "focus list"), ("keys", "→ terminal")],
+        Mode::Settings => vec![("⏎", "save"), ("esc", "cancel")],
+        // Terminal footer is drawn separately (shows the configured prefix).
+        Mode::Terminal => vec![],
     };
 
     // When a terminal is open but the sidebar is focused, advertise how to jump in.
@@ -919,6 +951,44 @@ fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), inner);
 }
 
+fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let modal = centered(area, 64, 11);
+    f.render_widget(Clear, modal);
+    let block = panel_block("Settings", true);
+    let inner = block.inner(modal);
+    f.render_widget(block, modal);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "terminal escape prefix",
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "key that returns focus from the terminal back to the list",
+            Style::default().fg(MUTED),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("key › ", Style::default().fg(GOLD)),
+            Span::styled(app.settings_input.clone(), Style::default().fg(TEXT)),
+            Span::styled("▏", Style::default().fg(GOLD).slow_blink()),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "examples:  ctrl-a   ctrl-b   f12   ctrl-space",
+            Style::default().fg(MUTED),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("⏎", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+            Span::styled(" save   ", Style::default().fg(MUTED)),
+            Span::styled("esc", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+            Span::styled(" cancel", Style::default().fg(MUTED)),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let modal = centered(area, 64, 36);
     f.render_widget(Clear, modal);
@@ -971,6 +1041,8 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         help_row("E", "delete empty sessions"),
         help_row("M", "toggle desktop notifications"),
         help_row("R", "refresh now"),
+        help_row(":", "settings (terminal prefix)"),
+        help_row("i / l", "focus embedded terminal"),
         help_row("?", "this help"),
         help_row("q / ctrl-c", "quit"),
     ];
