@@ -9,7 +9,6 @@ mod ui;
 mod watcher;
 
 use std::io::{self, Write};
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -108,19 +107,12 @@ fn main() -> Result<()> {
 
         match exit_request {
             ExitRequest::Quit => return Ok(()),
-            ExitRequest::Exec(pending) => {
-                run_exec(pending);
-                // After the child exits, return to the TUI and trigger a fresh scan.
-                app.kick_scan();
-                continue;
-            }
         }
     }
 }
 
 enum ExitRequest {
     Quit,
-    Exec(PendingExec),
 }
 
 fn run_list(history_days: i64) -> Result<()> {
@@ -335,7 +327,7 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
             let cwd = form.cwd.clone();
             let args = form.args();
             app.mode = Mode::Browse;
-            return Some(ExitRequest::Exec(PendingExec::Custom { cwd, args }));
+            open_terminal_for(app, PendingExec::Custom { cwd, args });
         }
         _ => {}
     }
@@ -364,13 +356,13 @@ fn handle_browse(
             if let Some(s) = app.selected_session() {
                 let id = s.id.clone();
                 let cwd = s.cwd.clone();
-                return Some(ExitRequest::Exec(PendingExec::Resume { id, cwd }));
+                open_terminal_for(app, PendingExec::Resume { id, cwd });
             }
         }
         KeyCode::Char('n') => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
-                return Some(ExitRequest::Exec(PendingExec::NewClaude { cwd }));
+                open_terminal_for(app, PendingExec::NewClaude { cwd });
             }
         }
         KeyCode::Char('N') => {
@@ -388,11 +380,7 @@ fn handle_browse(
         KeyCode::Char('s') => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
-                app.request_terminal(TerminalSpec {
-                    cwd,
-                    argv: vec![],
-                    title: "shell".into(),
-                });
+                open_terminal_for(app, PendingExec::NewShell { cwd });
             }
         }
         // vim-style: move focus into the terminal pane (insert). No-op unless a
@@ -566,128 +554,102 @@ fn find_claude_binary() -> Option<String> {
     Some("claude".into())
 }
 
-fn run_exec(pending: PendingExec) {
-    let _ = io::stdout().flush();
-    // tmux mode: only when tmux is installed AND we're not already inside tmux
-    // (we don't try to nest — nested tmux sessions are a UX trap).
+/// Open an embedded terminal for a launch intent. When tmux is available the
+/// command runs inside a detached tmux session that we `tmux attach` to in the
+/// PTY (so it persists across detach/quit); otherwise the command runs directly
+/// in the PTY.
+fn open_terminal_for(app: &mut App, pending: PendingExec) {
     let use_tmux = tmux::available() && !tmux::inside_tmux();
-    if use_tmux {
-        run_exec_tmux(pending);
-    } else {
-        run_exec_direct(pending);
-    }
-}
-
-fn run_exec_tmux(pending: PendingExec) {
-    match pending {
+    let claude = find_claude_binary();
+    let spec = match pending {
         PendingExec::Resume { id, cwd } => {
-            let Some(claude) = find_claude_binary() else {
-                eprintln!("claude binary not found");
-                pause();
+            let Some(claude) = claude else {
+                app.flash("claude binary not found");
                 return;
             };
-            let name = tmux::resume_name(&id);
-            let cmd = tmux::join_command(&[&claude, "--resume", &id]);
-            tmux::ensure_session(&name, &cwd, &cmd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-        PendingExec::NewClaude { cwd } => {
-            let Some(claude) = find_claude_binary() else {
-                eprintln!("claude binary not found");
-                pause();
-                return;
-            };
-            let name = tmux::new_claude_name();
-            let cmd = tmux::sh_quote(&claude);
-            tmux::ensure_session(&name, &cwd, &cmd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-        PendingExec::NewShell { cwd } => {
-            let name = tmux::new_shell_name();
-            tmux::ensure_session_shell(&name, &cwd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-        PendingExec::Custom { cwd, args } => {
-            let Some(claude) = find_claude_binary() else {
-                eprintln!("claude binary not found");
-                pause();
-                return;
-            };
-            let name = tmux::new_claude_name();
-            let mut parts: Vec<&str> = Vec::with_capacity(1 + args.len());
-            parts.push(&claude);
-            for a in &args {
-                parts.push(a);
-            }
-            let cmd = tmux::join_command(&parts);
-            tmux::ensure_session(&name, &cwd, &cmd);
-            print_attach_hint(&name);
-            tmux::attach(&name);
-        }
-    }
-}
-
-fn print_attach_hint(name: &str) {
-    // One-line hint before tmux takes the screen — visible for a moment so
-    // first-time users learn how to detach. tmux's own banner clears it.
-    let _ = writeln!(
-        io::stdout(),
-        "→ tmux session {}  (Ctrl-b d to detach back to ManageCode)",
-        name
-    );
-    let _ = io::stdout().flush();
-}
-
-fn run_exec_direct(pending: PendingExec) {
-    match pending {
-        PendingExec::Resume { id, cwd } => {
-            if let Some(claude) = find_claude_binary() {
-                let mut cmd = Command::new(claude);
-                cmd.arg("--resume").arg(id);
-                cmd.current_dir(&cwd);
-                let _ = cmd.status();
+            if use_tmux {
+                let name = tmux::resume_name(&id);
+                let cmd = tmux::join_command(&[&claude, "--resume", &id]);
+                tmux::ensure_session(&name, &cwd, &cmd);
+                attach_spec(&name, &cwd, "claude")
             } else {
-                eprintln!("claude binary not found in PATH or known locations");
-                pause();
+                TerminalSpec {
+                    cwd,
+                    argv: vec![claude, "--resume".into(), id],
+                    title: "claude".into(),
+                }
             }
         }
         PendingExec::NewClaude { cwd } => {
-            if let Some(claude) = find_claude_binary() {
-                let mut cmd = Command::new(claude);
-                cmd.current_dir(&cwd);
-                let _ = cmd.status();
+            let Some(claude) = claude else {
+                app.flash("claude binary not found");
+                return;
+            };
+            if use_tmux {
+                let name = tmux::new_claude_name();
+                let cmd = tmux::sh_quote(&claude);
+                tmux::ensure_session(&name, &cwd, &cmd);
+                attach_spec(&name, &cwd, "claude")
             } else {
-                eprintln!("claude binary not found in PATH or known locations");
-                pause();
+                TerminalSpec {
+                    cwd,
+                    argv: vec![claude],
+                    title: "claude".into(),
+                }
             }
         }
         PendingExec::NewShell { cwd } => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            let mut cmd = Command::new(shell);
-            cmd.arg("-l");
-            cmd.current_dir(&cwd);
-            let _ = cmd.status();
-        }
-        PendingExec::Custom { cwd, args } => {
-            if let Some(claude) = find_claude_binary() {
-                let mut cmd = Command::new(claude);
-                cmd.args(args);
-                cmd.current_dir(&cwd);
-                let _ = cmd.status();
+            if use_tmux {
+                let name = tmux::new_shell_name();
+                tmux::ensure_session_shell(&name, &cwd);
+                attach_spec(&name, &cwd, "shell")
             } else {
-                eprintln!("claude binary not found");
-                pause();
+                TerminalSpec {
+                    cwd,
+                    argv: vec![],
+                    title: "shell".into(),
+                }
             }
         }
-    }
+        PendingExec::Custom { cwd, args } => {
+            let Some(claude) = claude else {
+                app.flash("claude binary not found");
+                return;
+            };
+            if use_tmux {
+                let name = tmux::new_claude_name();
+                let mut parts: Vec<&str> = Vec::with_capacity(1 + args.len());
+                parts.push(&claude);
+                for a in &args {
+                    parts.push(a);
+                }
+                let cmd = tmux::join_command(&parts);
+                tmux::ensure_session(&name, &cwd, &cmd);
+                attach_spec(&name, &cwd, "claude")
+            } else {
+                let mut argv = vec![claude];
+                argv.extend(args);
+                TerminalSpec {
+                    cwd,
+                    argv,
+                    title: "claude".into(),
+                }
+            }
+        }
+    };
+    app.request_terminal(spec);
 }
 
-fn pause() {
-    eprint!("\npress enter to return to ManageCode…");
-    let _ = io::stderr().flush();
-    let mut buf = String::new();
-    let _ = io::stdin().read_line(&mut buf);
+/// A TerminalSpec that attaches to an existing tmux session inside the PTY.
+fn attach_spec(name: &str, cwd: &str, title: &str) -> TerminalSpec {
+    TerminalSpec {
+        cwd: cwd.to_string(),
+        argv: vec![
+            "tmux".into(),
+            "attach-session".into(),
+            "-t".into(),
+            name.to_string(),
+        ],
+        title: title.to_string(),
+    }
 }
