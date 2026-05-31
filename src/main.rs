@@ -96,6 +96,7 @@ fn main() -> Result<()> {
     if args.list_only {
         return run_list(args.history_days);
     }
+    install_panic_hook();
     let mut app = App::new(args.history_days);
 
     loop {
@@ -159,6 +160,17 @@ fn truncate_str(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max - 1).collect();
     out.push('…');
     out
+}
+
+/// Restore the terminal (raw mode, alternate screen, mouse capture) if we panic
+/// mid-render, so the user's shell isn't left in a broken state.
+fn install_panic_hook() {
+    let original = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original(info);
+    }));
 }
 
 fn enter_tui() -> Result<()> {
