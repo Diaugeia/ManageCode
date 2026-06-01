@@ -555,7 +555,7 @@ pub fn is_empty_session(s: &SessionInfo) -> bool {
     !s.is_alive && s.usage.message_count == 0
 }
 
-pub fn sort_sessions(s: &mut Vec<SessionInfo>) {
+pub fn sort_sessions(s: &mut [SessionInfo]) {
     s.sort_by(|a, b| {
         match (a.is_alive, b.is_alive) {
             (true, false) => return std::cmp::Ordering::Less,

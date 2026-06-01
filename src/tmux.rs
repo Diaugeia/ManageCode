@@ -7,15 +7,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// with the user's own tmux sessions.
 pub const PREFIX: &str = "mc-";
 
-/// Is `tmux` present on $PATH?
-pub fn available() -> bool {
+/// Run `tmux <args>` silently and report whether it exited successfully.
+fn tmux_ok(args: &[&str]) -> bool {
     Command::new("tmux")
-        .arg("-V")
+        .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Is `tmux` present on $PATH?
+pub fn available() -> bool {
+    tmux_ok(&["-V"])
 }
 
 /// Are we currently running inside a tmux client? If yes, we should
@@ -46,23 +51,11 @@ pub fn list_managed_set() -> HashSet<String> {
 }
 
 pub fn has_session(name: &str) -> bool {
-    Command::new("tmux")
-        .args(["has-session", "-t", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tmux_ok(&["has-session", "-t", name])
 }
 
 pub fn kill_session(name: &str) -> bool {
-    Command::new("tmux")
-        .args(["kill-session", "-t", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tmux_ok(&["kill-session", "-t", name])
 }
 
 /// Tmux session name for a known Claude session id. Truncated to keep names
@@ -101,13 +94,7 @@ pub fn ensure_session(name: &str, cwd: &str, command: &str) -> bool {
     if has_session(name) {
         return true;
     }
-    Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", cwd, command])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tmux_ok(&["new-session", "-d", "-s", name, "-c", cwd, command])
 }
 
 /// Create a detached tmux session in `cwd` that runs the user's default
@@ -116,13 +103,7 @@ pub fn ensure_session_shell(name: &str, cwd: &str) -> bool {
     if has_session(name) {
         return true;
     }
-    Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", cwd])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tmux_ok(&["new-session", "-d", "-s", name, "-c", cwd])
 }
 
 // The old full-screen `attach` helper was removed — sessions are now attached

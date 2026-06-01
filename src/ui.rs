@@ -140,6 +140,11 @@ fn panel_block(title: &str, focused: bool) -> Block<'_> {
         .padding(Padding::horizontal(1))
 }
 
+/// The "  ·  " dot separator used between header / footer segments.
+fn sep(color: Color) -> Span<'static> {
+    Span::styled("  ·  ", Style::default().fg(color))
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     let spin = SPINNER[app.spinner_phase % SPINNER.len()];
     let total = app.total_cost();
@@ -205,7 +210,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                 busy_label.clone(),
                 Style::default().fg(WARN),
             ));
-            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(sep(MUTED));
         }
         spans.push(Span::styled(
             format!("{} active", active),
@@ -213,18 +218,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         ));
         let tmux_n = app.tmux_count();
         if tmux_n > 0 {
-            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(sep(MUTED));
             spans.push(Span::styled(
                 format!("▶ {} tmux", tmux_n),
                 Style::default().fg(Color::Rgb(0x6F, 0xD9, 0xCB)),
             ));
         }
-        spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+        spans.push(sep(MUTED));
         spans.push(Span::styled(
             format!("{} total", count),
             Style::default().fg(TEXT),
         ));
-        spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+        spans.push(sep(MUTED));
         spans.push(Span::styled(
             format!("${:.2}", total),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -232,7 +237,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         // Today's spend, tinted by how close it is to the daily budget.
         let today = app.today_cost();
         if today > 0.0 || app.config.daily_budget_usd.is_some() {
-            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(sep(MUTED));
             let (txt, color) = match app.config.daily_budget_usd {
                 Some(limit) if limit > 0.0 => {
                     let c = if today >= limit {
@@ -249,11 +254,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             spans.push(Span::styled(txt, Style::default().fg(color).add_modifier(Modifier::BOLD)));
         }
         if !app.notifier.enabled {
-            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(sep(MUTED));
             spans.push(Span::styled("🔕 muted", Style::default().fg(MUTED)));
         }
         if let Some(tag) = &app.update_available {
-            spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+            spans.push(sep(MUTED));
             spans.push(Span::styled(
                 format!("⬆ {tag} — managecode --update"),
                 Style::default().fg(LIVE).add_modifier(Modifier::BOLD),
@@ -339,8 +344,8 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     loop {
         let mut used = 0usize;
         let mut last_visible = start_row;
-        for i in start_row..rows.len() {
-            used += row_heights[i];
+        for (i, h) in row_heights.iter().enumerate().skip(start_row) {
+            used += h;
             if used > avail {
                 break;
             }
@@ -727,7 +732,7 @@ fn format_num(n: u64) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*c as char);
@@ -823,7 +828,7 @@ fn draw_terminal_footer(f: &mut Frame, area: Rect, app: &App) {
     let line = Line::from(vec![
         Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(" focus list", Style::default().fg(MUTED)),
-        Span::styled("  ·  ", Style::default().fg(ACCENT_DIM)),
+        sep(ACCENT_DIM),
         Span::styled("keys", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(" → terminal", Style::default().fg(MUTED)),
     ]);
@@ -910,7 +915,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     format!("${:.4}", s.cost),
                     Style::default().fg(TEXT),
                 ),
-                Span::styled("  ·  ", Style::default().fg(ACCENT_DIM)),
+                sep(ACCENT_DIM),
                 Span::styled(
                     truncate(&short_path(&s.cwd), area.width.saturating_sub(20) as usize),
                     Style::default().fg(MUTED),
@@ -1032,7 +1037,7 @@ fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
         "█".repeat(filled.min(width))
     }
 
-    let dirs = top(by_dir.into_iter(), 8);
+    let dirs = top(by_dir, 8);
     let models = top(by_model.into_iter().map(|(k, v)| (k.to_string(), v)), 4);
     let mut days: Vec<(String, f64)> =
         by_day.into_iter().filter(|(_, c)| *c > 0.0).collect();
@@ -1249,12 +1254,7 @@ fn draw_confirm_overlay(f: &mut Frame, area: Rect, app: &App) {
 fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
     let modal = centered(area, 64, 16);
     f.render_widget(Clear, modal);
-    let title = if form.resume_id.is_some() {
-        "Launch (resume)"
-    } else {
-        "Launch new claude"
-    };
-    let block = panel_block(title, true);
+    let block = panel_block("Launch new claude", true);
     let inner = block.inner(modal);
     f.render_widget(block, modal);
 

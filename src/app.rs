@@ -54,7 +54,6 @@ pub enum Mode {
 #[derive(Clone)]
 pub struct LaunchForm {
     pub cwd: String,
-    pub resume_id: Option<String>,
     pub field: usize,
     pub model: LaunchModel,
     pub dangerously_skip_permissions: bool,
@@ -103,10 +102,9 @@ impl LaunchModel {
 }
 
 impl LaunchForm {
-    pub fn new(cwd: String, resume_id: Option<String>, recent_dirs: Vec<String>) -> Self {
+    pub fn new(cwd: String, recent_dirs: Vec<String>) -> Self {
         LaunchForm {
             cwd,
-            resume_id,
             field: 0,
             model: LaunchModel::Auto,
             dangerously_skip_permissions: false,
@@ -176,10 +174,6 @@ impl LaunchForm {
 
     pub fn args(&self) -> Vec<String> {
         let mut a = Vec::new();
-        if let Some(id) = &self.resume_id {
-            a.push("--resume".into());
-            a.push(id.clone());
-        }
         if let Some(m) = self.model.flag() {
             a.push("--model".into());
             a.push(m.into());

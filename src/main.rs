@@ -118,18 +118,12 @@ fn main() -> Result<()> {
     let check_updates = !args.no_update_check && !update::check_disabled();
     let mut app = App::new(args.history_days, check_updates);
 
-    loop {
-        enter_tui()?;
-        let backend = CrosstermBackend::new(io::stdout());
-        let mut terminal = Terminal::new(backend)?;
-
-        let exit_request = run_loop(&mut terminal, &mut app)?;
-        leave_tui(&mut terminal)?;
-
-        match exit_request {
-            ExitRequest::Quit => return Ok(()),
-        }
-    }
+    enter_tui()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let ExitRequest::Quit = run_loop(&mut terminal, &mut app)?;
+    leave_tui(&mut terminal)?;
+    Ok(())
 }
 
 enum ExitRequest {
@@ -480,7 +474,7 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
         KeyCode::Down | KeyCode::Tab => {
             form.field = (form.field + 1) % LaunchForm::FIELD_COUNT;
         }
-        KeyCode::Char(' ') if matches!(form.field, 1 | 2 | 3 | 4) => form.toggle_field(),
+        KeyCode::Char(' ') if matches!(form.field, 1..=4) => form.toggle_field(),
         KeyCode::Left if form.field == 0 => form.cycle_dir(false),
         KeyCode::Right if form.field == 0 => form.cycle_dir(true),
         KeyCode::Left | KeyCode::Right if form.field == 1 => form.toggle_field(),
@@ -545,7 +539,7 @@ fn handle_browse(
                         .unwrap_or_default()
                 });
             let dirs = app.recent_dirs();
-            app.mode = Mode::Launch(LaunchForm::new(cwd, None, dirs));
+            app.mode = Mode::Launch(LaunchForm::new(cwd, dirs));
         }
         KeyCode::Char('s') => {
             if let Some(s) = app.selected_session() {

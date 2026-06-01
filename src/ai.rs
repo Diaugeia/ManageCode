@@ -78,8 +78,7 @@ pub fn suggest_name(snippet: &str) -> Option<String> {
     );
     let raw = run_haiku(&prompt, Duration::from_secs(45)).ok()?;
     let cleaned: String = raw
-        .replace('"', "")
-        .replace('\'', "")
+        .replace(['"', '\''], "")
         .trim()
         .to_string();
     if cleaned.is_empty()
