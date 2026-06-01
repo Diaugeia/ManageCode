@@ -1031,7 +1031,7 @@ fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!("${:.2}", today), Style::default().fg(LIVE)),
     ]));
 
-    let mut section = |lines: &mut Vec<Line>, title: &str, rows: &[(String, f64)]| {
+    let section = |lines: &mut Vec<Line>, title: &str, rows: &[(String, f64)]| {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             format!("── {} ──", title),

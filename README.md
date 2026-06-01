@@ -121,16 +121,25 @@ pane closes back to the dashboard.
 | `o` / `O` | collapse inactive / expand all groups |
 | `T` | toggle directory grouping |
 
-**Sessions**
+**Sessions & terminal**
 
 | Key | Action |
 |-----|--------|
-| `Enter` | resume / re-attach the highlighted session |
+| `Enter` | resume / re-attach in the embedded terminal |
+| `i` / `l` | focus the terminal pane |
+| `Ctrl-a` | from the terminal, return focus to the sidebar (configurable) |
 | `n` | new `claude` in that cwd (defaults) |
-| `N` | new `claude` with options form |
+| `N` | new `claude` with options form (editable cwd + recent-dir quick-pick) |
 | `s` | new shell in that cwd |
 | `r` | rename |
 | `K` | kill the background tmux session for this row |
+
+**Cost & settings**
+
+| Key | Action |
+|-----|--------|
+| `c` | cost summary (by directory / model / day) |
+| `:` | settings — terminal escape prefix and a daily budget alert |
 
 **Search**
 
