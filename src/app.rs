@@ -37,6 +37,8 @@ pub enum Mode {
     Terminal,
     /// The settings overlay is open.
     Settings,
+    /// The cost-summary overlay is open.
+    CostSummary,
 }
 
 #[derive(Clone)]

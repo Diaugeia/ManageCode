@@ -302,6 +302,15 @@ fn handle_key(
             handle_settings(app, code);
             None
         }
+        Mode::CostSummary => {
+            if matches!(
+                code,
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') | KeyCode::Char('$')
+            ) {
+                app.mode = Mode::Browse;
+            }
+            None
+        }
         // Reached only via the early return above; arm kept for exhaustiveness.
         Mode::Terminal => None,
     }
@@ -498,6 +507,9 @@ fn handle_browse(
         }
         KeyCode::Char(':') => {
             app.open_settings();
+        }
+        KeyCode::Char('c') => {
+            app.mode = Mode::CostSummary;
         }
         KeyCode::Char('\\') => {
             // Prompt-less AI search: use current filter buffer as the query.

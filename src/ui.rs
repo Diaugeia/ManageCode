@@ -111,6 +111,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Confirm(_) => draw_confirm_overlay(f, area, app),
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
         Mode::Settings => draw_settings_overlay(f, area, app),
+        Mode::CostSummary => draw_cost_summary_overlay(f, area, app),
         Mode::Browse => {}
         // Handled inline by the sidebar+terminal layout; no modal overlay.
         Mode::Terminal => {}
@@ -849,6 +850,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         Mode::Help | Mode::Confirm(_) => vec![("esc", "close")],
         Mode::Launch(_) => vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")],
         Mode::Settings => vec![("⏎", "save"), ("esc", "cancel")],
+        Mode::CostSummary => vec![("esc", "close")],
         // Terminal footer is drawn separately (shows the configured prefix).
         Mode::Terminal => vec![],
     };
@@ -970,6 +972,90 @@ fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("▏", Style::default().fg(GOLD).slow_blink()),
     ]);
     f.render_widget(Paragraph::new(line), inner);
+}
+
+fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
+    use std::collections::HashMap;
+
+    let modal = centered(area, 74, 34);
+    f.render_widget(Clear, modal);
+    let block = panel_block("Cost summary", true);
+    let inner = block.inner(modal);
+    f.render_widget(block, modal);
+
+    // Aggregate over all sessions.
+    let total: f64 = app.sessions.iter().map(|s| s.cost).sum();
+    let today = app.today_cost();
+
+    let mut by_dir: HashMap<String, f64> = HashMap::new();
+    let mut by_model: HashMap<&str, f64> = HashMap::new();
+    let mut by_day: HashMap<String, f64> = HashMap::new();
+    for s in &app.sessions {
+        *by_dir.entry(short_path(&s.cwd)).or_insert(0.0) += s.cost;
+        *by_model.entry(model_short(s.model.as_deref())).or_insert(0.0) += s.cost;
+        for (day, c) in &s.cost_by_day {
+            *by_day.entry(day.clone()).or_insert(0.0) += *c;
+        }
+    }
+
+    // Sort helper: by value desc.
+    fn top(map: impl IntoIterator<Item = (String, f64)>, n: usize) -> Vec<(String, f64)> {
+        let mut v: Vec<(String, f64)> = map.into_iter().filter(|(_, c)| *c > 0.0).collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        v.truncate(n);
+        v
+    }
+    fn bar(val: f64, max: f64, width: usize) -> String {
+        if max <= 0.0 {
+            return String::new();
+        }
+        let filled = ((val / max) * width as f64).round() as usize;
+        "█".repeat(filled.min(width))
+    }
+
+    let dirs = top(by_dir.into_iter(), 8);
+    let models = top(by_model.into_iter().map(|(k, v)| (k.to_string(), v)), 4);
+    let mut days: Vec<(String, f64)> =
+        by_day.into_iter().filter(|(_, c)| *c > 0.0).collect();
+    days.sort_by(|a, b| b.0.cmp(&a.0)); // most recent day first
+    days.truncate(10);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("total  ", Style::default().fg(MUTED)),
+        Span::styled(
+            format!("${:.2}", total),
+            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("    today  ", Style::default().fg(MUTED)),
+        Span::styled(format!("${:.2}", today), Style::default().fg(LIVE)),
+    ]));
+
+    let mut section = |lines: &mut Vec<Line>, title: &str, rows: &[(String, f64)]| {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!("── {} ──", title),
+            Style::default().fg(GOLD_DIM),
+        )));
+        let max = rows.iter().map(|(_, c)| *c).fold(0.0_f64, f64::max);
+        for (label, cost) in rows {
+            let name = truncate(label, 28);
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<29}", name), Style::default().fg(TEXT)),
+                Span::styled(format!("${:>8.2} ", cost), Style::default().fg(GOLD)),
+                Span::styled(bar(*cost, max, 22), Style::default().fg(GOLD_DIM)),
+            ]));
+        }
+        if rows.is_empty() {
+            lines.push(Line::from(Span::styled("  (none)", Style::default().fg(MUTED))));
+        }
+    };
+
+    section(&mut lines, "by directory", &dirs);
+    section(&mut lines, "by model", &models);
+    section(&mut lines, "by day (recent)", &days);
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
@@ -1095,6 +1181,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         help_row("M", "toggle desktop notifications"),
         help_row("R", "refresh now"),
         help_row(":", "settings (terminal prefix)"),
+        help_row("c", "cost summary"),
         help_row("i / l", "focus embedded terminal"),
         help_row("?", "this help"),
         help_row("q / ctrl-c", "quit"),
