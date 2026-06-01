@@ -11,16 +11,20 @@ use tui_term::widget::PseudoTerminal;
 use crate::app::{App, LaunchForm, Mode, Row, RowHit};
 use crate::models::{model_short, short_path, SessionInfo};
 
-// NotchAgent palette: deep black + warm gold + smoke gray.
-const GOLD: Color = Color::Rgb(0xD4, 0xA2, 0x4C);
-const GOLD_DIM: Color = Color::Rgb(0x8A, 0x6A, 0x33);
-const BG: Color = Color::Rgb(0x0B, 0x0B, 0x0E);
-const PANEL: Color = Color::Rgb(0x12, 0x12, 0x18);
-const TEXT: Color = Color::Rgb(0xE8, 0xE5, 0xDA);
-const MUTED: Color = Color::Rgb(0x77, 0x74, 0x6A);
-const LIVE: Color = Color::Rgb(0x68, 0xD3, 0x91);
-const WARN: Color = Color::Rgb(0xE0, 0x8C, 0x4F);
-const RED: Color = Color::Rgb(0xE0, 0x5A, 0x4F);
+// Terminal-native palette. Backgrounds inherit the terminal (`Color::Reset`) so
+// every panel shows through to the user's theme — no hardcoded scheme and no
+// seam against the embedded terminal pane. Accents and status colors use the 16
+// ANSI colors so they track whatever palette the terminal defines.
+const ACCENT: Color = Color::Cyan; // titles, borders, selection (was gold)
+const ACCENT_DIM: Color = Color::Blue; // unfocused borders / secondary accent
+const BG: Color = Color::Reset; // viewport / header / footer background
+const PANEL: Color = Color::Reset; // bordered-panel background
+const SEL_FG: Color = Color::Black; // foreground on a selected (ACCENT) row
+const TEXT: Color = Color::Reset; // primary text (terminal default fg)
+const MUTED: Color = Color::DarkGray;
+const LIVE: Color = Color::Green;
+const WARN: Color = Color::Yellow;
+const RED: Color = Color::Red;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -123,14 +127,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn panel_block(title: &str, focused: bool) -> Block<'_> {
-    let border_color = if focused { GOLD } else { GOLD_DIM };
+    let border_color = if focused { ACCENT } else { ACCENT_DIM };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             format!(" {} ", title),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(PANEL))
         .padding(Padding::horizontal(1))
@@ -144,18 +148,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let title = if matches!(tier, Layoutness::Narrow) {
         Line::from(vec![
-            Span::styled("◆ ", Style::default().fg(GOLD)),
+            Span::styled("◆ ", Style::default().fg(ACCENT)),
             Span::styled(
                 "ManageCode",
-                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
         ])
     } else {
         Line::from(vec![
-            Span::styled("◆ ", Style::default().fg(GOLD)),
+            Span::styled("◆ ", Style::default().fg(ACCENT)),
             Span::styled(
                 "ManageCode",
-                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled("  Claude session dashboard", Style::default().fg(MUTED)),
         ])
@@ -184,7 +188,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             Span::raw(" "),
             Span::styled(
                 format!("${:.2}", total),
-                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
         ])
         .alignment(Alignment::Right)
@@ -223,7 +227,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
         spans.push(Span::styled(
             format!("${:.2}", total),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
         // Today's spend, tinted by how close it is to the daily budget.
         let today = app.today_cost();
@@ -260,7 +264,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let block = Block::default()
         .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(GOLD_DIM))
+        .border_style(Style::default().fg(ACCENT_DIM))
         .style(Style::default().bg(BG));
     f.render_widget(block, area);
 
@@ -411,11 +415,11 @@ fn draw_group_header(f: &mut Frame, area: Rect, cwd: &str, total: usize, alive: 
     let chevron = if collapsed { "▸" } else { "▾" };
     let name = short_path(cwd);
     let mut spans: Vec<Span> = vec![
-        Span::styled(format!(" {} ", chevron), Style::default().fg(GOLD_DIM)),
+        Span::styled(format!(" {} ", chevron), Style::default().fg(ACCENT_DIM)),
         Span::styled(
             truncate(&name, (area.width as usize).saturating_sub(18)),
             Style::default()
-                .fg(GOLD)
+                .fg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
@@ -459,15 +463,15 @@ fn draw_session_row(
             _ => LIVE,
         }
     } else if session.is_recently_active() {
-        GOLD
+        ACCENT
     } else {
         MUTED
     };
 
     let name_style = if selected {
         Style::default()
-            .fg(BG)
-            .bg(GOLD)
+            .fg(SEL_FG)
+            .bg(ACCENT)
             .add_modifier(Modifier::BOLD)
     } else if session.is_recently_active() {
         Style::default().fg(TEXT)
@@ -475,12 +479,12 @@ fn draw_session_row(
         Style::default().fg(MUTED)
     };
     let cost_style = if selected {
-        Style::default().fg(BG).bg(GOLD)
+        Style::default().fg(SEL_FG).bg(ACCENT)
     } else {
-        Style::default().fg(GOLD_DIM)
+        Style::default().fg(ACCENT_DIM)
     };
     let model_style = if selected {
-        Style::default().fg(BG).bg(GOLD)
+        Style::default().fg(SEL_FG).bg(ACCENT)
     } else {
         Style::default().fg(MUTED)
     };
@@ -579,7 +583,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
-    let title_color = if session.is_alive { LIVE } else { GOLD };
+    let title_color = if session.is_alive { LIVE } else { ACCENT };
     lines.push(Line::from(vec![
         Span::styled(
             session.name.clone(),
@@ -627,7 +631,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "── tokens ──",
-        Style::default().fg(GOLD_DIM),
+        Style::default().fg(ACCENT_DIM),
     )));
     lines.push(token_row("input", session.usage.total_input));
     lines.push(token_row("cache read", session.usage.cache_read));
@@ -647,7 +651,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         Span::styled("cost  ", Style::default().fg(MUTED)),
         Span::styled(
             format!("${:.4}", session.cost),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
     ]));
 
@@ -695,7 +699,7 @@ fn draw_token_mix(f: &mut Frame, area: Rect, s: &SessionInfo) {
     );
     let g = Gauge::default()
         .block(Block::default().borders(Borders::NONE))
-        .gauge_style(Style::default().fg(GOLD).bg(Color::Rgb(0x22, 0x1E, 0x18)))
+        .gauge_style(Style::default().fg(ACCENT).bg(Color::Rgb(0x22, 0x1E, 0x18)))
         .ratio((rd as f64 / 100.0).clamp(0.0, 1.0))
         .label(Span::styled(label, Style::default().fg(TEXT)));
     f.render_widget(g, area);
@@ -813,14 +817,14 @@ fn draw_terminal_footer(f: &mut Frame, area: Rect, app: &App) {
     let prefix = app.config.escape_prefix.label();
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(GOLD_DIM))
+        .border_style(Style::default().fg(ACCENT_DIM))
         .style(Style::default().bg(BG));
     f.render_widget(block, area);
     let line = Line::from(vec![
-        Span::styled(prefix, Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+        Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(" focus list", Style::default().fg(MUTED)),
-        Span::styled("  ·  ", Style::default().fg(GOLD_DIM)),
-        Span::styled("keys", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+        Span::styled("  ·  ", Style::default().fg(ACCENT_DIM)),
+        Span::styled("keys", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(" → terminal", Style::default().fg(MUTED)),
     ]);
     f.render_widget(
@@ -878,18 +882,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for (i, (k, v)) in hints.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" · ", Style::default().fg(GOLD_DIM)));
+            spans.push(Span::styled(" · ", Style::default().fg(ACCENT_DIM)));
         }
         spans.push(Span::styled(
             (*k).to_string(),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled((*v).to_string(), Style::default().fg(MUTED)));
     }
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(GOLD_DIM))
+        .border_style(Style::default().fg(ACCENT_DIM))
         .style(Style::default().bg(BG));
     f.render_widget(block, area);
 
@@ -899,14 +903,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             let summary = Line::from(vec![
                 Span::styled(
                     model_short(s.model.as_deref()).to_string(),
-                    Style::default().fg(GOLD).bold(),
+                    Style::default().fg(ACCENT).bold(),
                 ),
                 Span::raw("  "),
                 Span::styled(
                     format!("${:.4}", s.cost),
                     Style::default().fg(TEXT),
                 ),
-                Span::styled("  ·  ", Style::default().fg(GOLD_DIM)),
+                Span::styled("  ·  ", Style::default().fg(ACCENT_DIM)),
                 Span::styled(
                     truncate(&short_path(&s.cwd), area.width.saturating_sub(20) as usize),
                     Style::default().fg(MUTED),
@@ -968,9 +972,9 @@ fn draw_filter_overlay(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(bar);
     f.render_widget(block, bar);
     let line = Line::from(vec![
-        Span::styled("› ", Style::default().fg(GOLD)),
+        Span::styled("› ", Style::default().fg(ACCENT)),
         Span::styled(app.filter.clone(), Style::default().fg(TEXT)),
-        Span::styled("▏", Style::default().fg(GOLD).slow_blink()),
+        Span::styled("▏", Style::default().fg(ACCENT).slow_blink()),
     ]);
     f.render_widget(Paragraph::new(line), inner);
 }
@@ -982,9 +986,9 @@ fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(bar);
     f.render_widget(block, bar);
     let line = Line::from(vec![
-        Span::styled("name › ", Style::default().fg(GOLD)),
+        Span::styled("name › ", Style::default().fg(ACCENT)),
         Span::styled(app.rename_buf.clone(), Style::default().fg(TEXT)),
-        Span::styled("▏", Style::default().fg(GOLD).slow_blink()),
+        Span::styled("▏", Style::default().fg(ACCENT).slow_blink()),
     ]);
     f.render_widget(Paragraph::new(line), inner);
 }
@@ -1040,7 +1044,7 @@ fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("total  ", Style::default().fg(MUTED)),
         Span::styled(
             format!("${:.2}", total),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled("    today  ", Style::default().fg(MUTED)),
         Span::styled(format!("${:.2}", today), Style::default().fg(LIVE)),
@@ -1050,15 +1054,15 @@ fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             format!("── {} ──", title),
-            Style::default().fg(GOLD_DIM),
+            Style::default().fg(ACCENT_DIM),
         )));
         let max = rows.iter().map(|(_, c)| *c).fold(0.0_f64, f64::max);
         for (label, cost) in rows {
             let name = truncate(label, 28);
             lines.push(Line::from(vec![
                 Span::styled(format!("{:<29}", name), Style::default().fg(TEXT)),
-                Span::styled(format!("${:>8.2} ", cost), Style::default().fg(GOLD)),
-                Span::styled(bar(*cost, max, 22), Style::default().fg(GOLD_DIM)),
+                Span::styled(format!("${:>8.2} ", cost), Style::default().fg(ACCENT)),
+                Span::styled(bar(*cost, max, 22), Style::default().fg(ACCENT_DIM)),
             ]));
         }
         if rows.is_empty() {
@@ -1082,14 +1086,14 @@ fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
 
     let mark = |i: usize| -> Span<'static> {
         if app.settings_field == i {
-            Span::styled("▸ ", Style::default().fg(GOLD))
+            Span::styled("▸ ", Style::default().fg(ACCENT))
         } else {
             Span::raw("  ")
         }
     };
     let cursor = |i: usize| -> Span<'static> {
         if app.settings_field == i {
-            Span::styled("▏", Style::default().fg(GOLD).slow_blink())
+            Span::styled("▏", Style::default().fg(ACCENT).slow_blink())
         } else {
             Span::raw("")
         }
@@ -1103,7 +1107,7 @@ fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(Span::styled(
             "terminal escape prefix",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
             mark(0),
@@ -1118,7 +1122,7 @@ fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
         Line::raw(""),
         Line::from(Span::styled(
             "daily budget (USD)",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
             mark(1),
@@ -1132,11 +1136,11 @@ fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
         )),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("⏎", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+            Span::styled("⏎", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" save   ", Style::default().fg(MUTED)),
-            Span::styled("↑↓/tab", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+            Span::styled("↑↓/tab", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" field   ", Style::default().fg(MUTED)),
-            Span::styled("esc", Style::default().fg(GOLD).add_modifier(Modifier::BOLD)),
+            Span::styled("esc", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" cancel", Style::default().fg(MUTED)),
         ]),
     ];
@@ -1153,7 +1157,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled(
             "navigation",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         help_row("↑ ↓ / j k", "move selection"),
         help_row("g / G", "first / last"),
@@ -1163,7 +1167,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::raw(""),
         Line::from(Span::styled(
             "session actions",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         help_row("⏎", "resume selected session"),
         help_row("n", "new claude (defaults)"),
@@ -1173,7 +1177,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::raw(""),
         Line::from(Span::styled(
             "tmux multi-session",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         help_row("Ctrl-b d", "detach (inside a tmux session)"),
         help_row("⏎", "re-attach an existing ▶ background session"),
@@ -1181,7 +1185,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::raw(""),
         Line::from(Span::styled(
             "search & AI",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         help_row("/", "literal filter"),
         help_row("\\", "AI search (Haiku)"),
@@ -1189,7 +1193,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::raw(""),
         Line::from(Span::styled(
             "maintenance",
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         help_row("D", "delete junk sessions"),
         help_row("E", "delete empty sessions"),
@@ -1209,7 +1213,7 @@ fn help_row(keys: &str, desc: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             format!("  {:<14}", keys),
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(desc.to_string(), Style::default().fg(TEXT)),
     ])
@@ -1230,9 +1234,9 @@ fn draw_confirm_overlay(f: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(prompt, Style::default().fg(TEXT))),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("y", Style::default().fg(GOLD).bold()),
+            Span::styled("y", Style::default().fg(ACCENT).bold()),
             Span::styled(" yes   ", Style::default().fg(MUTED)),
-            Span::styled("n", Style::default().fg(GOLD).bold()),
+            Span::styled("n", Style::default().fg(ACCENT).bold()),
             Span::styled(" no", Style::default().fg(MUTED)),
         ]),
     ];
@@ -1264,12 +1268,12 @@ fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
     for i in 0..LaunchForm::FIELD_COUNT {
         let focused = i == form.field;
         let label_style = if focused {
-            Style::default().fg(BG).bg(GOLD).add_modifier(Modifier::BOLD)
+            Style::default().fg(SEL_FG).bg(ACCENT).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(MUTED)
         };
         let value_style = if focused {
-            Style::default().fg(GOLD).add_modifier(Modifier::BOLD)
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(TEXT)
         };
@@ -1282,7 +1286,7 @@ fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
             Span::raw("  "),
             Span::styled(value, value_style),
             if (i == 0 || i == 5) && focused {
-                Span::styled("▏", Style::default().fg(GOLD).slow_blink())
+                Span::styled("▏", Style::default().fg(ACCENT).slow_blink())
             } else {
                 Span::raw("")
             },
@@ -1290,11 +1294,11 @@ fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("⏎", Style::default().fg(GOLD).bold()),
+        Span::styled("⏎", Style::default().fg(ACCENT).bold()),
         Span::styled(" launch  ", Style::default().fg(MUTED)),
-        Span::styled("space/←→", Style::default().fg(GOLD).bold()),
+        Span::styled("space/←→", Style::default().fg(ACCENT).bold()),
         Span::styled(" toggle  ", Style::default().fg(MUTED)),
-        Span::styled("esc", Style::default().fg(GOLD).bold()),
+        Span::styled("esc", Style::default().fg(ACCENT).bold()),
         Span::styled(" cancel", Style::default().fg(MUTED)),
     ]));
 
@@ -1313,7 +1317,7 @@ fn draw_toast(f: &mut Frame, area: Rect, msg: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(GOLD))
+        .border_style(Style::default().fg(ACCENT))
         .style(Style::default().bg(PANEL));
     let inner = block.inner(toast);
     f.render_widget(block, toast);

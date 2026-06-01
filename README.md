@@ -93,9 +93,11 @@ pane closes back to the dashboard.
 
 ## Highlights
 
-- **Live status.** Color-coded per session: green = idle, amber = busy,
-  purple = thinking, teal `▶` = running in the background. Updates show
-  up in well under a second.
+- **Terminal-native colors.** The dashboard inherits your terminal's
+  background and theme — no hardcoded scheme, and no seam against the
+  embedded terminal pane. Status is still color-coded per session
+  (idle / busy / thinking / `▶` backgrounded) using your terminal's palette.
+  Updates show up in well under a second.
 - **Cost at a glance.** Per-session token usage and dollar cost, plus a
   daily total in the header. Set a daily budget (`:`) to get an alert and a
   red header when today's spend crosses it; press `c` for a cost summary
