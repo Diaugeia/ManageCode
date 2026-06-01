@@ -793,13 +793,31 @@ fn find_claude_binary() -> Option<String> {
 /// in the PTY.
 fn open_terminal_for(app: &mut App, pending: PendingExec) {
     let use_tmux = tmux::available() && !tmux::inside_tmux();
-    let claude = find_claude_binary();
+
+    // A plain shell needs no claude binary, so handle it up front; the remaining
+    // arms all require claude, so resolve and check it once for them.
+    if let PendingExec::NewShell { cwd } = pending {
+        let spec = if use_tmux {
+            let name = tmux::new_shell_name();
+            tmux::ensure_session_shell(&name, &cwd);
+            attach_spec(&name, &cwd, "shell")
+        } else {
+            TerminalSpec {
+                cwd,
+                argv: vec![],
+                title: "shell".into(),
+            }
+        };
+        app.request_terminal(spec);
+        return;
+    }
+
+    let Some(claude) = find_claude_binary() else {
+        app.flash("claude binary not found");
+        return;
+    };
     let spec = match pending {
         PendingExec::Resume { id, cwd } => {
-            let Some(claude) = claude else {
-                app.flash("claude binary not found");
-                return;
-            };
             if use_tmux {
                 let name = tmux::resume_name(&id);
                 let cmd = tmux::join_command(&[&claude, "--resume", &id]);
@@ -814,10 +832,6 @@ fn open_terminal_for(app: &mut App, pending: PendingExec) {
             }
         }
         PendingExec::NewClaude { cwd } => {
-            let Some(claude) = claude else {
-                app.flash("claude binary not found");
-                return;
-            };
             if use_tmux {
                 let name = tmux::new_claude_name();
                 let cmd = tmux::sh_quote(&claude);
@@ -831,24 +845,7 @@ fn open_terminal_for(app: &mut App, pending: PendingExec) {
                 }
             }
         }
-        PendingExec::NewShell { cwd } => {
-            if use_tmux {
-                let name = tmux::new_shell_name();
-                tmux::ensure_session_shell(&name, &cwd);
-                attach_spec(&name, &cwd, "shell")
-            } else {
-                TerminalSpec {
-                    cwd,
-                    argv: vec![],
-                    title: "shell".into(),
-                }
-            }
-        }
         PendingExec::Custom { cwd, args } => {
-            let Some(claude) = claude else {
-                app.flash("claude binary not found");
-                return;
-            };
             if use_tmux {
                 let name = tmux::new_claude_name();
                 let mut parts: Vec<&str> = Vec::with_capacity(1 + args.len());
@@ -869,6 +866,8 @@ fn open_terminal_for(app: &mut App, pending: PendingExec) {
                 }
             }
         }
+        // Handled by the early return above.
+        PendingExec::NewShell { .. } => unreachable!(),
     };
     app.request_terminal(spec);
 }
