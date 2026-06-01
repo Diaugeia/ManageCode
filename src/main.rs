@@ -371,10 +371,16 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
         KeyCode::Down | KeyCode::Tab => {
             form.field = (form.field + 1) % LaunchForm::FIELD_COUNT;
         }
-        KeyCode::Char(' ') if form.field != 4 => form.toggle_field(),
-        KeyCode::Left | KeyCode::Right if form.field == 0 => form.toggle_field(),
-        KeyCode::Char(c) if form.field == 4 => form.add_dir.push(c),
-        KeyCode::Backspace if form.field == 4 => {
+        KeyCode::Char(' ') if matches!(form.field, 1 | 2 | 3 | 4) => form.toggle_field(),
+        KeyCode::Left if form.field == 0 => form.cycle_dir(false),
+        KeyCode::Right if form.field == 0 => form.cycle_dir(true),
+        KeyCode::Left | KeyCode::Right if form.field == 1 => form.toggle_field(),
+        KeyCode::Char(c) if form.field == 0 => form.cwd.push(c),
+        KeyCode::Backspace if form.field == 0 => {
+            form.cwd.pop();
+        }
+        KeyCode::Char(c) if form.field == 5 => form.add_dir.push(c),
+        KeyCode::Backspace if form.field == 5 => {
             form.add_dir.pop();
         }
         KeyCode::Enter => {
@@ -429,7 +435,8 @@ fn handle_browse(
                         .map(|h| h.to_string_lossy().to_string())
                         .unwrap_or_default()
                 });
-            app.mode = Mode::Launch(LaunchForm::new(cwd, None));
+            let dirs = app.recent_dirs();
+            app.mode = Mode::Launch(LaunchForm::new(cwd, None, dirs));
         }
         KeyCode::Char('s') => {
             if let Some(s) = app.selected_session() {

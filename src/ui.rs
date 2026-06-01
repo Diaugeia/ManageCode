@@ -1089,7 +1089,7 @@ fn draw_confirm_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
-    let modal = centered(area, 64, 14);
+    let modal = centered(area, 64, 16);
     f.render_widget(Clear, modal);
     let title = if form.resume_id.is_some() {
         "Launch (resume)"
@@ -1127,7 +1127,7 @@ fn draw_launch_overlay(f: &mut Frame, area: Rect, form: &LaunchForm) {
             Span::styled(format!(" {:<32}", label), label_style),
             Span::raw("  "),
             Span::styled(value, value_style),
-            if i == 4 && focused {
+            if (i == 0 || i == 5) && focused {
                 Span::styled("▏", Style::default().fg(GOLD).slow_blink())
             } else {
                 Span::raw("")

@@ -49,6 +49,10 @@ pub struct LaunchForm {
     pub sandbox: bool,
     pub verbose: bool,
     pub add_dir: String,
+    /// Distinct recent cwds for quick selection on the cwd field.
+    pub recent_dirs: Vec<String>,
+    /// Index into recent_dirs for Left/Right cycling.
+    pub dir_idx: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -87,7 +91,7 @@ impl LaunchModel {
 }
 
 impl LaunchForm {
-    pub fn new(cwd: String, resume_id: Option<String>) -> Self {
+    pub fn new(cwd: String, resume_id: Option<String>, recent_dirs: Vec<String>) -> Self {
         LaunchForm {
             cwd,
             resume_id,
@@ -97,29 +101,47 @@ impl LaunchForm {
             sandbox: false,
             verbose: false,
             add_dir: String::new(),
+            recent_dirs,
+            dir_idx: 0,
         }
     }
 
-    pub const FIELD_COUNT: usize = 5;
+    pub const FIELD_COUNT: usize = 6;
+
+    /// Cycle the cwd through the recent-dirs list (Left/Right on the cwd field).
+    pub fn cycle_dir(&mut self, forward: bool) {
+        if self.recent_dirs.is_empty() {
+            return;
+        }
+        let n = self.recent_dirs.len();
+        self.dir_idx = if forward {
+            (self.dir_idx + 1) % n
+        } else {
+            (self.dir_idx + n - 1) % n
+        };
+        self.cwd = self.recent_dirs[self.dir_idx].clone();
+    }
 
     pub fn field_label(&self, i: usize) -> &'static str {
         match i {
-            0 => "model",
-            1 => "--dangerously-skip-permissions",
-            2 => "--sandbox",
-            3 => "--verbose",
-            4 => "--add-dir",
+            0 => "cwd",
+            1 => "model",
+            2 => "--dangerously-skip-permissions",
+            3 => "--sandbox",
+            4 => "--verbose",
+            5 => "--add-dir",
             _ => "",
         }
     }
 
     pub fn field_value(&self, i: usize) -> String {
         match i {
-            0 => self.model.label().to_string(),
-            1 => bool_label(self.dangerously_skip_permissions),
-            2 => bool_label(self.sandbox),
-            3 => bool_label(self.verbose),
-            4 => {
+            0 => crate::models::short_path(&self.cwd),
+            1 => self.model.label().to_string(),
+            2 => bool_label(self.dangerously_skip_permissions),
+            3 => bool_label(self.sandbox),
+            4 => bool_label(self.verbose),
+            5 => {
                 if self.add_dir.is_empty() {
                     "—".into()
                 } else {
@@ -132,10 +154,10 @@ impl LaunchForm {
 
     pub fn toggle_field(&mut self) {
         match self.field {
-            0 => self.model = self.model.cycle(),
-            1 => self.dangerously_skip_permissions = !self.dangerously_skip_permissions,
-            2 => self.sandbox = !self.sandbox,
-            3 => self.verbose = !self.verbose,
+            1 => self.model = self.model.cycle(),
+            2 => self.dangerously_skip_permissions = !self.dangerously_skip_permissions,
+            3 => self.sandbox = !self.sandbox,
+            4 => self.verbose = !self.verbose,
             _ => {}
         }
     }
@@ -687,6 +709,19 @@ impl App {
     /// Is a terminal pane currently on screen (open or about to open)?
     pub fn has_terminal(&self) -> bool {
         self.term.is_some() || self.pending_terminal.is_some()
+    }
+
+    /// Distinct session cwds, most-recently-active first (sessions are already
+    /// sorted by recency), for quick selection in the launch form.
+    pub fn recent_dirs(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for s in &self.sessions {
+            if !s.cwd.is_empty() && seen.insert(s.cwd.clone()) {
+                out.push(s.cwd.clone());
+            }
+        }
+        out
     }
 
     /// Open the settings overlay, seeding the editor with the current prefix.
