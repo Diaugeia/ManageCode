@@ -48,6 +48,10 @@ pub fn handle_key(
             None
         }
         Mode::Launch(_) => handle_launch(app, code),
+        Mode::MigrateMemory => {
+            handle_migrate(app, code);
+            None
+        }
         Mode::Settings => {
             handle_settings(app, code);
             None
@@ -377,6 +381,7 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
                 }
             }
         }
+        MigrateMemory => app.open_migrate(),
     }
     None
 }
@@ -427,6 +432,47 @@ fn handle_rename(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char(c) => {
             app.rename_buf.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_migrate(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.migrate_input.clear();
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Enter => {
+            let src = app.migrate_src.clone();
+            let dst = app.migrate_input.trim().to_string();
+            match crate::memory::migrate_memory(&src, &dst) {
+                Ok(n) => app.flash(format!(
+                    "migrated memory → {} ({n} file(s))",
+                    crate::models::short_path(&dst)
+                )),
+                Err(e) => app.flash(format!("migrate failed: {e}")),
+            }
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Backspace => {
+            app.migrate_input.pop();
+        }
+        // Left/Right cycle through recently-seen directories as quick targets.
+        KeyCode::Left | KeyCode::Right => {
+            let dirs = app.recent_dirs();
+            if !dirs.is_empty() {
+                let cur = dirs.iter().position(|d| *d == app.migrate_input);
+                let next = match (cur, code) {
+                    (Some(i), KeyCode::Right) => (i + 1) % dirs.len(),
+                    (Some(i), KeyCode::Left) => (i + dirs.len() - 1) % dirs.len(),
+                    _ => 0,
+                };
+                app.migrate_input = dirs[next].clone();
+            }
+        }
+        KeyCode::Char(c) => {
+            app.migrate_input.push(c);
         }
         _ => {}
     }

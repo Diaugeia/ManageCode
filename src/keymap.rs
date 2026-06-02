@@ -41,6 +41,7 @@ pub enum BrowseAction {
     DeleteEmpty,
     KillTmux,
     Convert,
+    MigrateMemory,
 }
 
 impl BrowseAction {
@@ -77,6 +78,7 @@ impl BrowseAction {
             DeleteEmpty => "delete_empty",
             KillTmux => "kill_tmux",
             Convert => "convert",
+            MigrateMemory => "migrate_memory",
         }
     }
 
@@ -87,7 +89,7 @@ impl BrowseAction {
             Quit, Up, Down, PageUp, PageDown, Top, Bottom, Open, NewClaude, LaunchForm, NewShell,
             FocusTerminal, Filter, Rename, Refresh, ToggleGroup, CollapseInactive, ExpandAll,
             CycleView, ToggleMute, Help, Settings, CostSummary, AiSearch, AutoName, DeleteJunk,
-            DeleteEmpty, KillTmux, Convert,
+            DeleteEmpty, KillTmux, Convert, MigrateMemory,
         ]
         .into_iter()
         .find(|a| a.name() == s)
@@ -181,6 +183,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding { action: A::NewShell, keys: &[Char('s')], group: Some("session actions"), help_keys: None, help: Some("new shell in cwd"), footer: Some(("s", "new shell")), footer_narrow: false },
     Binding { action: A::Rename, keys: &[Char('r')], group: Some("session actions"), help_keys: None, help: Some("rename"), footer: Some(("r", "rename")), footer_narrow: false },
     Binding { action: A::Convert, keys: &[Char('x')], group: Some("session actions"), help_keys: None, help: Some("convert record to the other tool (Claude↔Codex)"), footer: None, footer_narrow: false },
+    Binding { action: A::MigrateMemory, keys: &[Char('X')], group: Some("session actions"), help_keys: None, help: Some("migrate memory (CLAUDE.md/AGENTS.md) to another dir"), footer: None, footer_narrow: false },
     Binding { action: A::KillTmux, keys: &[Char('K')], group: Some("tmux multi-session"), help_keys: None, help: Some("kill the background tmux session"), footer: None, footer_narrow: false },
     Binding { action: A::Filter, keys: &[Char('/')], group: Some("search & AI"), help_keys: None, help: Some("literal filter"), footer: Some(("/", "filter")), footer_narrow: true },
     Binding { action: A::AiSearch, keys: &[Char('\\')], group: Some("search & AI"), help_keys: None, help: Some("AI search (Haiku)"), footer: None, footer_narrow: false },
@@ -318,10 +321,11 @@ mod tests {
 
     #[test]
     fn config_override_remaps_char_and_frees_old() {
+        // 'z' is unused by default, so the remap is unambiguous.
         let mut cfg = HashMap::new();
-        cfg.insert("quit".to_string(), "x".to_string());
+        cfg.insert("quit".to_string(), "z".to_string());
         let km = Keymap::from_config(&cfg);
-        assert_eq!(km.action_for(KeyCode::Char('x')), Some(BrowseAction::Quit));
+        assert_eq!(km.action_for(KeyCode::Char('z')), Some(BrowseAction::Quit));
         assert_eq!(km.action_for(KeyCode::Char('q')), None);
     }
 

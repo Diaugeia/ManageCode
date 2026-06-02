@@ -116,6 +116,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
         Mode::Settings => draw_settings_overlay(f, area, app),
         Mode::CostSummary => draw_cost_summary_overlay(f, area, app),
+        Mode::MigrateMemory => draw_migrate_overlay(f, area, app),
         Mode::Browse => {}
         // Handled inline by the sidebar+terminal layout; no modal overlay.
         Mode::Terminal => {}
@@ -935,6 +936,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         Mode::Browse => app.keymap.footer_hints(narrow),
         Mode::Filter => owned(vec![("⏎", "apply"), ("\\", "AI search"), ("esc", "cancel")]),
         Mode::Rename => owned(vec![("⏎", "save"), ("esc", "cancel")]),
+        Mode::MigrateMemory => {
+            owned(vec![("⏎", "migrate"), ("←→", "recent dir"), ("esc", "cancel")])
+        }
         Mode::Help | Mode::Confirm(_) => owned(vec![("esc", "close")]),
         Mode::Launch(_) => owned(vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")]),
         Mode::Settings => owned(vec![("⏎", "save"), ("esc", "cancel")]),

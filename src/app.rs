@@ -142,6 +142,8 @@ pub enum Mode {
     Settings,
     /// The cost-summary overlay is open.
     CostSummary,
+    /// Choosing a target directory to migrate the selected session's memory to.
+    MigrateMemory,
 }
 
 #[derive(Clone)]
@@ -353,6 +355,9 @@ pub struct App {
     pub keymap: crate::keymap::Keymap,
     /// Editing buffer for the settings overlay.
     pub settings_input: String,
+    /// Source dir + target-dir input buffer for the memory-migration overlay.
+    pub migrate_src: String,
+    pub migrate_input: String,
     /// Budget editing buffer for the settings overlay (USD, "" = off).
     pub settings_budget_input: String,
     /// Which settings field is focused (0 = prefix, 1 = daily budget).
@@ -444,6 +449,8 @@ impl App {
             config,
             keymap,
             settings_input: String::new(),
+            migrate_src: String::new(),
+            migrate_input: String::new(),
             settings_budget_input: String::new(),
             settings_field: 0,
             budget_alerted: false,
@@ -993,6 +1000,24 @@ impl App {
 
     /// Distinct session cwds, most-recently-active first (sessions are already
     /// sorted by recency), for quick selection in the launch form.
+    /// Open the memory-migration overlay for the selected session's directory.
+    pub fn open_migrate(&mut self) {
+        let Some(s) = self.selected_session() else {
+            self.flash("no selection");
+            return;
+        };
+        let src = s.cwd.clone();
+        if !crate::memory::has_memory(&src) {
+            self.flash("no CLAUDE.md / AGENTS.md in this session's directory");
+            return;
+        }
+        self.migrate_src = src;
+        self.migrate_input = dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.mode = Mode::MigrateMemory;
+    }
+
     pub fn recent_dirs(&self) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();

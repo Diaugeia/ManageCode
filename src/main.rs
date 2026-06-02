@@ -5,6 +5,7 @@ mod convert;
 mod input;
 mod keymap;
 mod launcher;
+mod memory;
 mod models;
 mod notifications;
 mod pty;
