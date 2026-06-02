@@ -11,6 +11,7 @@ use crate::notifications::Notifier;
 use crate::pty::{TermSession, TerminalSpec};
 use crate::scanner;
 use crate::tmux;
+use crate::tree;
 use crate::watcher;
 
 /// One row in the visible list — either a project header or a session row.
@@ -75,107 +76,6 @@ impl ViewMode {
     }
 }
 
-/// Node in the directory trie used to build the tree view.
-#[derive(Default)]
-struct TreeNode {
-    path: String,
-    name: String,
-    children: std::collections::BTreeMap<String, TreeNode>,
-    sessions: Vec<usize>,
-}
-
-impl TreeNode {
-    /// `(total, alive)` session counts for this node's whole subtree.
-    fn counts(&self, sessions: &[SessionInfo]) -> (usize, usize) {
-        let mut total = self.sessions.len();
-        let mut alive = self
-            .sessions
-            .iter()
-            .filter(|&&i| sessions[i].is_alive)
-            .count();
-        for c in self.children.values() {
-            let (t, a) = c.counts(sessions);
-            total += t;
-            alive += a;
-        }
-        (total, alive)
-    }
-}
-
-/// Non-empty path components of an absolute path (`/a//b/` → `a`, `b`).
-fn path_segments(p: &str) -> impl Iterator<Item = &str> {
-    p.split('/').filter(|c| !c.is_empty())
-}
-
-/// Follow a single-child, session-less chain (path compression) to the node
-/// that actually renders as one tree row.
-fn compress(node: &TreeNode) -> &TreeNode {
-    let mut cur = node;
-    while cur.sessions.is_empty() && cur.children.len() == 1 {
-        cur = cur.children.values().next().unwrap();
-    }
-    cur
-}
-
-/// Is `anc` the same directory as `path`, or an ancestor of it?
-fn is_ancestor_or_eq(anc: &str, path: &str) -> bool {
-    path == anc || path.starts_with(&format!("{anc}/"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{compress, is_ancestor_or_eq, TreeNode};
-
-    #[test]
-    fn ancestor_matching() {
-        assert!(is_ancestor_or_eq("/a/b", "/a/b")); // equal
-        assert!(is_ancestor_or_eq("/a/b", "/a/b/c")); // ancestor
-        assert!(!is_ancestor_or_eq("/a/b", "/a/bc")); // not a path boundary
-        assert!(!is_ancestor_or_eq("/a/b", "/a")); // parent, not ancestor
-    }
-
-    /// Build a node at `path` with the given child names (each a leaf with one
-    /// session so compression stops there).
-    fn node(path: &str, children: &[&str]) -> TreeNode {
-        let mut n = TreeNode {
-            path: path.to_string(),
-            ..TreeNode::default()
-        };
-        for c in children {
-            let cp = format!("{path}/{c}");
-            n.children.insert(
-                c.to_string(),
-                TreeNode {
-                    path: cp,
-                    name: c.to_string(),
-                    sessions: vec![0], // a session => not further compressible
-                    ..TreeNode::default()
-                },
-            );
-        }
-        n
-    }
-
-    #[test]
-    fn compress_collapses_single_child_chain() {
-        // /a -> /a/b -> /a/b/c (single, session-less chain) compresses to /a/b/c.
-        let mut a = node("/a", &[]);
-        let mut b = node("/a/b", &[]);
-        let c = node("/a/b/c", &["x", "y"]); // branches: chain stops here
-        b.children.insert("c".into(), c);
-        a.children.insert("b".into(), b);
-        assert_eq!(compress(&a).path, "/a/b/c");
-
-        // A node that itself holds a session does not compress past itself.
-        let withseed = TreeNode {
-            path: "/p".into(),
-            sessions: vec![0],
-            ..TreeNode::default()
-        };
-        assert_eq!(compress(&withseed).path, "/p");
-    }
-}
-
 /// A clickable target in the session list, recorded by the renderer each frame
 /// so mouse clicks can be mapped back to a row.
 #[derive(Clone)]
@@ -190,20 +90,40 @@ pub enum RowHit {
 pub enum Mode {
     Browse,
     Filter,
-    Rename,
+    /// Renaming the selected session; `buf` is the in-progress name.
+    Rename {
+        buf: String,
+    },
     Confirm(ConfirmAction),
     Help,
     Launch(LaunchForm),
     /// An embedded terminal pane is active and receiving keystrokes.
     Terminal,
     /// The settings overlay is open.
-    Settings,
+    Settings(SettingsForm),
     /// The cost-summary overlay is open.
     CostSummary,
     /// Choosing a target directory to migrate the selected session's memory to.
-    MigrateMemory,
-    /// Choosing the Tree-view root directory.
-    TreeRoot,
+    /// `src` is the source directory; `input` is the target-dir edit buffer.
+    MigrateMemory {
+        src: String,
+        input: String,
+    },
+    /// Choosing the Tree-view root directory; `input` is the edit buffer.
+    TreeRoot {
+        input: String,
+    },
+}
+
+/// Editing state for the settings overlay.
+#[derive(Clone)]
+pub struct SettingsForm {
+    /// Escape-prefix key edit buffer.
+    pub input: String,
+    /// Daily-budget (USD) edit buffer ("" = off).
+    pub budget_input: String,
+    /// Which field is focused (0 = prefix, 1 = daily budget).
+    pub field: usize,
 }
 
 #[derive(Clone)]
@@ -381,7 +301,6 @@ pub struct App {
     pub sessions: Vec<SessionInfo>,
     pub selected: usize,
     pub filter: String,
-    pub rename_buf: String,
     pub mode: Mode,
     pub history_days: i64,
     pub last_scan: Instant,
@@ -416,31 +335,27 @@ pub struct App {
     /// Tree-view root: only sessions under this dir appear in Tree view. Empty
     /// means "everything" (no scoping). Resolved from config or the launch cwd.
     pub tree_root: String,
-    /// Edit buffer for the Tree-root picker overlay.
-    pub tree_root_input: String,
     /// Whether the last key was a `z` fold prefix, awaiting `a`/`R`/`M`.
     pub pending_z: bool,
     /// User configuration (escape prefix, etc.).
     pub config: Config,
     /// Browse-mode keymap, resolved from `config.keys` (drives dispatch + UI).
     pub keymap: crate::keymap::Keymap,
-    /// Editing buffer for the settings overlay.
-    pub settings_input: String,
-    /// Source dir + target-dir input buffer for the memory-migration overlay.
-    pub migrate_src: String,
-    pub migrate_input: String,
-    /// Budget editing buffer for the settings overlay (USD, "" = off).
-    pub settings_budget_input: String,
-    /// Which settings field is focused (0 = prefix, 1 = daily budget).
-    pub settings_field: usize,
     /// Whether we've already alerted that today's spend crossed the budget.
     budget_alerted: bool,
     /// Newer release tag found by the startup check, if any (e.g. "v0.7.0").
     pub update_available: Option<String>,
-    update_rx: mpsc::Receiver<String>,
     last_tmux_refresh: Instant,
     last_live_sweep: Instant,
     dirty_since: Option<Instant>,
+    /// The manually-managed mpsc channel ends, grouped to declutter `App`.
+    channels: Channels,
+}
+
+/// The set of mpsc channel ends `App` manages by hand. Senders are kept so the
+/// background threads that produce these events can clone them.
+struct Channels {
+    update_rx: mpsc::Receiver<String>,
     rx: mpsc::Receiver<Vec<SessionInfo>>,
     tx: mpsc::Sender<Vec<SessionInfo>>,
     ai_rx: mpsc::Receiver<AiEvent>,
@@ -510,7 +425,6 @@ impl App {
             sessions: Vec::new(),
             selected: 0,
             filter: String::new(),
-            rename_buf: String::new(),
             mode: Mode::Browse,
             history_days,
             last_scan: Instant::now() - Duration::from_secs(60),
@@ -533,26 +447,22 @@ impl App {
             list_hits: RefCell::new(Vec::new()),
             last_click: None,
             tree_root,
-            tree_root_input: String::new(),
             pending_z: false,
             config,
             keymap,
-            settings_input: String::new(),
-            migrate_src: String::new(),
-            migrate_input: String::new(),
-            settings_budget_input: String::new(),
-            settings_field: 0,
             budget_alerted: false,
             update_available: None,
-            update_rx,
             last_tmux_refresh: Instant::now() - Duration::from_secs(60),
             last_live_sweep: Instant::now() - Duration::from_secs(60),
             dirty_since: None,
-            rx,
-            tx,
-            ai_rx,
-            ai_tx,
-            watch_rx,
+            channels: Channels {
+                update_rx,
+                rx,
+                tx,
+                ai_rx,
+                ai_tx,
+                watch_rx,
+            },
         };
         app.kick_scan();
         // Persistent, switch-back-and-forth sessions rely on tmux; nudge the
@@ -570,7 +480,7 @@ impl App {
             return;
         }
         self.scanning = true;
-        let tx = self.tx.clone();
+        let tx = self.channels.tx.clone();
         let opts = scanner::ScanOpts {
             history_days: self.history_days,
             scan_claude: self.config.scan_claude,
@@ -585,7 +495,7 @@ impl App {
 
     pub fn tick(&mut self) {
         self.spinner_phase = (self.spinner_phase + 1) % 8;
-        if let Ok(result) = self.rx.try_recv() {
+        if let Ok(result) = self.channels.rx.try_recv() {
             self.sessions = result;
             self.scanning = false;
             self.last_scan = Instant::now();
@@ -593,18 +503,18 @@ impl App {
             self.clamp_selection();
         }
         // Drain AI events that arrived.
-        while let Ok(ev) = self.ai_rx.try_recv() {
+        while let Ok(ev) = self.channels.ai_rx.try_recv() {
             self.handle_ai_event(ev);
         }
         // Pick up the background update-check result (fires at most once).
         if self.update_available.is_none() {
-            if let Ok(tag) = self.update_rx.try_recv() {
+            if let Ok(tag) = self.channels.update_rx.try_recv() {
                 self.update_available = Some(tag);
             }
         }
         // Drain file-watcher events — coalesce into a single dirty flag.
         let mut got_event = false;
-        while let Ok(()) = self.watch_rx.try_recv() {
+        while let Ok(()) = self.channels.watch_rx.try_recv() {
             got_event = true;
         }
         if got_event {
@@ -701,7 +611,7 @@ impl App {
             return;
         }
         self.ai_running = true;
-        let tx = self.ai_tx.clone();
+        let tx = self.channels.ai_tx.clone();
         let sessions = self.sessions.clone();
         let model = self.config.ai_model.clone();
         let timeout = self.config.ai_timeout_secs;
@@ -739,7 +649,7 @@ impl App {
         }
         self.auto_naming = true;
         self.auto_name_progress = (0, cands.len());
-        let tx = self.ai_tx.clone();
+        let tx = self.channels.ai_tx.clone();
         let projects_dir = scanner::claude_dir().join("projects");
         let model = self.config.ai_model.clone();
         let timeout = self.config.ai_timeout_secs;
@@ -780,15 +690,6 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect()
-    }
-
-    /// In Tree view, is `cwd` within the configured root? Always true in other
-    /// views or when no root is set.
-    fn in_tree_scope(&self, cwd: &str) -> bool {
-        if !matches!(self.view, ViewMode::Tree) || self.tree_root.is_empty() {
-            return true;
-        }
-        is_ancestor_or_eq(&self.tree_root, cwd)
     }
 
     /// Headers / tree nodes + sessions woven together in display order.
@@ -838,98 +739,28 @@ impl App {
         out
     }
 
-    /// Build the directory trie from the in-scope filtered sessions.
-    fn build_tree(&self, filtered: &[usize]) -> TreeNode {
-        let mut root = TreeNode::default();
-        for &idx in filtered {
-            let cwd = self.sessions[idx].cwd.clone();
-            if !self.in_tree_scope(&cwd) {
-                continue;
-            }
-            let mut node = &mut root;
-            let mut path = String::new();
-            for c in path_segments(&cwd) {
-                path.push('/');
-                path.push_str(c);
-                node = node
-                    .children
-                    .entry(c.to_string())
-                    .or_insert_with(|| TreeNode {
-                        path: path.clone(),
-                        name: c.to_string(),
-                        ..TreeNode::default()
-                    });
-            }
-            node.sessions.push(idx);
-        }
-        root
-    }
-
     fn tree_rows(&self, filtered: &[usize]) -> Vec<Row> {
-        let root = self.build_tree(filtered);
-        let mut out: Vec<Row> = Vec::new();
-        for child in root.children.values() {
-            self.emit_tree(child, 0, &mut out);
-        }
-        out
+        tree::tree_rows(
+            &self.sessions,
+            filtered,
+            &self.collapsed_groups,
+            matches!(self.view, ViewMode::Tree),
+            &self.tree_root,
+        )
     }
 
     /// The compressed paths of the immediate child nodes of the tree node
     /// rendered at `parent_path`. Used to collapse children one level on expand
     /// (file-explorer behavior). Empty if the node has no child directories.
     fn immediate_child_paths(&self, parent_path: &str) -> Vec<String> {
-        fn find<'a>(node: &'a TreeNode, target: &str) -> Option<&'a TreeNode> {
-            let cur = compress(node);
-            if cur.path == target {
-                return Some(cur);
-            }
-            cur.children.values().find_map(|c| find(c, target))
-        }
         let filtered = self.filtered_indices();
-        let root = self.build_tree(&filtered);
-        root.children
-            .values()
-            .find_map(|top| find(top, parent_path))
-            .map(|node| {
-                node.children
-                    .values()
-                    .map(|c| compress(c).path.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn emit_tree(&self, node: &TreeNode, depth: usize, out: &mut Vec<Row>) {
-        // Path-compress a chain of single-child, session-less dirs into one row
-        // so `a/b/c` shows as one node when nothing branches.
-        let mut name = node.name.clone();
-        let mut cur = node;
-        while cur.sessions.is_empty() && cur.children.len() == 1 {
-            let child = cur.children.values().next().unwrap();
-            name.push('/');
-            name.push_str(&child.name);
-            cur = child;
-        }
-
-        let (total, alive) = cur.counts(&self.sessions);
-        let collapsed = self.collapsed_groups.contains(&cur.path);
-        out.push(Row::Tree {
-            path: cur.path.clone(),
-            name,
-            depth,
-            total,
-            alive,
-            collapsed,
-        });
-        if collapsed {
-            return;
-        }
-        for k in cur.children.values() {
-            self.emit_tree(k, depth + 1, out);
-        }
-        for &idx in &cur.sessions {
-            out.push(Row::Session { idx, depth });
-        }
+        tree::immediate_child_paths(
+            &self.sessions,
+            &filtered,
+            matches!(self.view, ViewMode::Tree),
+            &self.tree_root,
+            parent_path,
+        )
     }
 
     /// The session under the cursor, or `None` if the cursor is on a directory
@@ -992,7 +823,7 @@ impl App {
                 let cwds: Vec<String> = self.sessions.iter().map(|s| s.cwd.clone()).collect();
                 for cwd in cwds {
                     let mut path = String::new();
-                    for c in path_segments(&cwd) {
+                    for c in tree::path_segments(&cwd) {
                         path.push('/');
                         path.push_str(c);
                         self.collapsed_groups.insert(path.clone());
@@ -1006,20 +837,20 @@ impl App {
 
     /// Open the Tree-root picker, seeded with the current root (or launch cwd).
     pub fn open_tree_root(&mut self) {
-        self.tree_root_input = if self.tree_root.is_empty() {
+        let input = if self.tree_root.is_empty() {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default()
         } else {
             self.tree_root.clone()
         };
-        self.mode = Mode::TreeRoot;
+        self.mode = Mode::TreeRoot { input };
     }
 
     /// Apply the Tree-root picker: scope the tree, persist, and switch to Tree
     /// view. An empty input clears the root (show everything).
-    pub fn apply_tree_root(&mut self) {
-        let dir = self.tree_root_input.trim().to_string();
+    pub fn apply_tree_root(&mut self, input: &str) {
+        let dir = input.trim().to_string();
         self.tree_root = dir.clone();
         self.config.tree_root = dir;
         let _ = crate::config::save(&self.config);
@@ -1212,7 +1043,8 @@ impl App {
     /// Un-collapse everything hiding `cwd` (the directory itself or any ancestor
     /// node) so the session there becomes visible.
     pub fn reveal_path(&mut self, cwd: &str) {
-        self.collapsed_groups.retain(|p| !is_ancestor_or_eq(p, cwd));
+        self.collapsed_groups
+            .retain(|p| !tree::is_ancestor_or_eq(p, cwd));
     }
 
     /// Move the cursor onto the row for `key` (header / tree node) and toggle it
@@ -1241,11 +1073,10 @@ impl App {
             self.flash("no CLAUDE.md / AGENTS.md in this session's directory");
             return;
         }
-        self.migrate_src = src;
-        self.migrate_input = dirs::home_dir()
+        let input = dirs::home_dir()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_default();
-        self.mode = Mode::MigrateMemory;
+        self.mode = Mode::MigrateMemory { src, input };
     }
 
     pub fn recent_dirs(&self) -> Vec<String> {
@@ -1261,14 +1092,17 @@ impl App {
 
     /// Open the settings overlay, seeding the editor with the current prefix.
     pub fn open_settings(&mut self) {
-        self.settings_input = self.config.escape_prefix.label();
-        self.settings_budget_input = self
+        let input = self.config.escape_prefix.label();
+        let budget_input = self
             .config
             .daily_budget_usd
             .map(|v| format!("{v}"))
             .unwrap_or_default();
-        self.settings_field = 0;
-        self.mode = Mode::Settings;
+        self.mode = Mode::Settings(SettingsForm {
+            input,
+            budget_input,
+            field: 0,
+        });
     }
 
     pub fn tmux_count(&self) -> usize {
@@ -1310,10 +1144,10 @@ impl App {
         self.sessions.iter().filter(|s| s.is_alive).count()
     }
 
-    pub fn rename_selected(&mut self) {
+    pub fn rename_selected(&mut self, buf: &str) {
         if let Some(s) = self.selected_session() {
             let id = s.id.clone();
-            let new = self.rename_buf.trim().to_string();
+            let new = buf.trim().to_string();
             if new.is_empty() {
                 self.custom_names.remove(&id);
             } else {
@@ -1328,6 +1162,5 @@ impl App {
                 };
             }
         }
-        self.rename_buf.clear();
     }
 }

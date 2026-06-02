@@ -29,7 +29,7 @@ pub fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Ex
             handle_filter(app, code);
             None
         }
-        Mode::Rename => {
+        Mode::Rename { .. } => {
             handle_rename(app, code);
             None
         }
@@ -44,15 +44,15 @@ pub fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Ex
             None
         }
         Mode::Launch(_) => handle_launch(app, code),
-        Mode::MigrateMemory => {
+        Mode::MigrateMemory { .. } => {
             handle_migrate(app, code);
             None
         }
-        Mode::TreeRoot => {
+        Mode::TreeRoot { .. } => {
             handle_tree_root(app, code);
             None
         }
-        Mode::Settings => {
+        Mode::Settings(_) => {
             handle_settings(app, code);
             None
         }
@@ -349,8 +349,8 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
         }
         Rename => {
             if let Some(s) = app.selected_session() {
-                app.rename_buf = s.name.clone();
-                app.mode = Mode::Rename;
+                let buf = s.name.clone();
+                app.mode = Mode::Rename { buf };
             }
         }
         Refresh => {
@@ -456,35 +456,48 @@ fn handle_filter(app: &mut App, code: KeyCode) {
 }
 
 fn handle_rename(app: &mut App, code: KeyCode) {
+    let Mode::Rename { buf } = &mut app.mode else {
+        return;
+    };
     match code {
         KeyCode::Esc => {
-            app.rename_buf.clear();
             app.mode = Mode::Browse;
         }
         KeyCode::Enter => {
-            app.rename_selected();
+            let buf = std::mem::take(buf);
+            app.rename_selected(&buf);
             app.mode = Mode::Browse;
             app.flash("renamed");
         }
         KeyCode::Backspace => {
-            app.rename_buf.pop();
+            buf.pop();
         }
         KeyCode::Char(c) => {
-            app.rename_buf.push(c);
+            buf.push(c);
         }
         _ => {}
     }
 }
 
 fn handle_migrate(app: &mut App, code: KeyCode) {
+    // Left/Right cycle through recently-seen directories as quick targets.
+    // Resolve the candidate list up front to avoid borrowing `app` while the
+    // `Mode::MigrateMemory` fields are borrowed mutably below.
+    let recent = if matches!(code, KeyCode::Left | KeyCode::Right) {
+        app.recent_dirs()
+    } else {
+        Vec::new()
+    };
+    let Mode::MigrateMemory { src, input } = &mut app.mode else {
+        return;
+    };
     match code {
         KeyCode::Esc => {
-            app.migrate_input.clear();
             app.mode = Mode::Browse;
         }
         KeyCode::Enter => {
-            let src = app.migrate_src.clone();
-            let dst = app.migrate_input.trim().to_string();
+            let src = src.clone();
+            let dst = input.trim().to_string();
             match crate::memory::migrate_memory(&src, &dst) {
                 Ok(n) => app.flash(format!(
                     "migrated memory → {} ({n} file(s))",
@@ -495,53 +508,62 @@ fn handle_migrate(app: &mut App, code: KeyCode) {
             app.mode = Mode::Browse;
         }
         KeyCode::Backspace => {
-            app.migrate_input.pop();
+            input.pop();
         }
-        // Left/Right cycle through recently-seen directories as quick targets.
         KeyCode::Left | KeyCode::Right => {
-            let dirs = app.recent_dirs();
-            if !dirs.is_empty() {
-                let cur = dirs.iter().position(|d| *d == app.migrate_input);
+            if !recent.is_empty() {
+                let cur = recent.iter().position(|d| d == input);
                 let next = match (cur, code) {
-                    (Some(i), KeyCode::Right) => (i + 1) % dirs.len(),
-                    (Some(i), KeyCode::Left) => (i + dirs.len() - 1) % dirs.len(),
+                    (Some(i), KeyCode::Right) => (i + 1) % recent.len(),
+                    (Some(i), KeyCode::Left) => (i + recent.len() - 1) % recent.len(),
                     _ => 0,
                 };
-                app.migrate_input = dirs[next].clone();
+                *input = recent[next].clone();
             }
         }
         KeyCode::Char(c) => {
-            app.migrate_input.push(c);
+            input.push(c);
         }
         _ => {}
     }
 }
 
 fn handle_tree_root(app: &mut App, code: KeyCode) {
+    // Resolve the candidate list up front to avoid borrowing `app` while the
+    // `Mode::TreeRoot` field is borrowed mutably below.
+    let candidates = if matches!(code, KeyCode::Left | KeyCode::Right) {
+        app.root_candidates()
+    } else {
+        Vec::new()
+    };
+    let Mode::TreeRoot { input } = &mut app.mode else {
+        return;
+    };
     match code {
         KeyCode::Esc => {
-            app.tree_root_input.clear();
             app.mode = Mode::Browse;
         }
-        KeyCode::Enter => app.apply_tree_root(),
+        KeyCode::Enter => {
+            let input = std::mem::take(input);
+            app.apply_tree_root(&input);
+        }
         KeyCode::Backspace => {
-            app.tree_root_input.pop();
+            input.pop();
         }
         // Left/Right cycle launch cwd → home → recently-seen directories.
         KeyCode::Left | KeyCode::Right => {
-            let dirs = app.root_candidates();
-            if !dirs.is_empty() {
-                let cur = dirs.iter().position(|d| *d == app.tree_root_input);
+            if !candidates.is_empty() {
+                let cur = candidates.iter().position(|d| d == input);
                 let next = match (cur, code) {
-                    (Some(i), KeyCode::Right) => (i + 1) % dirs.len(),
-                    (Some(i), KeyCode::Left) => (i + dirs.len() - 1) % dirs.len(),
+                    (Some(i), KeyCode::Right) => (i + 1) % candidates.len(),
+                    (Some(i), KeyCode::Left) => (i + candidates.len() - 1) % candidates.len(),
                     _ => 0,
                 };
-                app.tree_root_input = dirs[next].clone();
+                *input = candidates[next].clone();
             }
         }
         KeyCode::Char(c) => {
-            app.tree_root_input.push(c);
+            input.push(c);
         }
         _ => {}
     }
@@ -560,23 +582,28 @@ fn handle_confirm(app: &mut App, code: KeyCode) {
 }
 
 fn handle_settings(app: &mut App, code: KeyCode) {
+    let Mode::Settings(form) = &mut app.mode else {
+        return;
+    };
     match code {
         KeyCode::Esc => {
-            app.settings_input.clear();
-            app.settings_budget_input.clear();
             app.mode = Mode::Browse;
         }
         KeyCode::Up => {
-            if app.settings_field > 0 {
-                app.settings_field -= 1;
+            if form.field > 0 {
+                form.field -= 1;
             }
         }
         KeyCode::Down | KeyCode::Tab => {
-            app.settings_field = (app.settings_field + 1) % 2;
+            form.field = (form.field + 1) % 2;
         }
         KeyCode::Enter => {
+            // Copy the buffers out so the `form` borrow ends before we touch
+            // `app.config` / `app.flash`.
+            let input = form.input.clone();
+            let budget_input = form.budget_input.clone();
             // Validate the prefix.
-            let spec = match config::KeySpec::parse(&app.settings_input) {
+            let spec = match config::KeySpec::parse(&input) {
                 Ok(s) if s.is_reserved() => {
                     app.flash("that key is reserved (Ctrl-C / Ctrl-D)");
                     return;
@@ -589,7 +616,7 @@ fn handle_settings(app: &mut App, code: KeyCode) {
             };
             // Validate the daily budget (empty = off).
             let budget = {
-                let t = app.settings_budget_input.trim();
+                let t = budget_input.trim();
                 if t.is_empty() {
                     None
                 } else {
@@ -609,26 +636,22 @@ fn handle_settings(app: &mut App, code: KeyCode) {
                 Ok(()) => app.flash("settings saved"),
                 Err(e) => app.flash(format!("save failed: {e}")),
             }
-            app.settings_input.clear();
-            app.settings_budget_input.clear();
             app.mode = Mode::Browse;
         }
         KeyCode::Backspace => {
-            if app.settings_field == 0 {
-                app.settings_input.pop();
+            if form.field == 0 {
+                form.input.pop();
             } else {
-                app.settings_budget_input.pop();
+                form.budget_input.pop();
             }
         }
         KeyCode::Char(c) => {
-            if app.settings_field == 0 {
-                if app.settings_input.chars().count() < 24 {
-                    app.settings_input.push(c);
+            if form.field == 0 {
+                if form.input.chars().count() < 24 {
+                    form.input.push(c);
                 }
-            } else if (c.is_ascii_digit() || c == '.')
-                && app.settings_budget_input.chars().count() < 12
-            {
-                app.settings_budget_input.push(c);
+            } else if (c.is_ascii_digit() || c == '.') && form.budget_input.chars().count() < 12 {
+                form.budget_input.push(c);
             }
         }
         _ => {}

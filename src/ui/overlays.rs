@@ -46,26 +46,26 @@ pub(super) fn draw_filter_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), inner);
 }
 
-pub(super) fn draw_rename_overlay(f: &mut Frame, area: Rect, app: &App) {
+pub(super) fn draw_rename_overlay(f: &mut Frame, area: Rect, buf: &str) {
     let inner = modal_frame(f, area, "Rename session", 60, 5);
     let line = Line::from(vec![
         Span::styled("name › ", Style::default().fg(ACCENT)),
-        Span::styled(app.rename_buf.clone(), Style::default().fg(TEXT)),
+        Span::styled(buf.to_string(), Style::default().fg(TEXT)),
         Span::styled("▏", Style::default().fg(ACCENT).slow_blink()),
     ]);
     f.render_widget(Paragraph::new(line), inner);
 }
 
-pub(super) fn draw_migrate_overlay(f: &mut Frame, area: Rect, app: &App) {
+pub(super) fn draw_migrate_overlay(f: &mut Frame, area: Rect, src: &str, input: &str) {
     let inner = modal_frame(f, area, "Migrate memory", 70, 7);
     let lines = vec![
         Line::from(vec![
             Span::styled("from  ", Style::default().fg(MUTED)),
-            Span::styled(short_path(&app.migrate_src), Style::default().fg(TEXT)),
+            Span::styled(short_path(src), Style::default().fg(TEXT)),
         ]),
         Line::from(vec![
             Span::styled("to  › ", Style::default().fg(ACCENT)),
-            Span::styled(short_path(&app.migrate_input), Style::default().fg(TEXT)),
+            Span::styled(short_path(input), Style::default().fg(TEXT)),
             Span::styled("▏", Style::default().fg(ACCENT).slow_blink()),
         ]),
         Line::raw(""),
@@ -77,7 +77,7 @@ pub(super) fn draw_migrate_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-pub(super) fn draw_tree_root_overlay(f: &mut Frame, area: Rect, app: &App) {
+pub(super) fn draw_tree_root_overlay(f: &mut Frame, area: Rect, input: &str) {
     let inner = modal_frame(f, area, "Tree root", 70, 7);
     let lines = vec![
         Line::from(Span::styled(
@@ -86,7 +86,7 @@ pub(super) fn draw_tree_root_overlay(f: &mut Frame, area: Rect, app: &App) {
         )),
         Line::from(vec![
             Span::styled("root  › ", Style::default().fg(ACCENT)),
-            Span::styled(short_path(&app.tree_root_input), Style::default().fg(TEXT)),
+            Span::styled(short_path(input), Style::default().fg(TEXT)),
             Span::styled("▏", Style::default().fg(ACCENT).slow_blink()),
         ]),
         Line::raw(""),
@@ -182,27 +182,27 @@ pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
+pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, form: &SettingsForm) {
     let inner = modal_frame(f, area, "Settings", 64, 14);
 
     let mark = |i: usize| -> Span<'static> {
-        if app.settings_field == i {
+        if form.field == i {
             Span::styled("▸ ", Style::default().fg(ACCENT))
         } else {
             Span::raw("  ")
         }
     };
     let cursor = |i: usize| -> Span<'static> {
-        if app.settings_field == i {
+        if form.field == i {
             Span::styled("▏", Style::default().fg(ACCENT).slow_blink())
         } else {
             Span::raw("")
         }
     };
-    let budget_shown = if app.settings_budget_input.is_empty() {
+    let budget_shown = if form.budget_input.is_empty() {
         "off".to_string()
     } else {
-        app.settings_budget_input.clone()
+        form.budget_input.clone()
     };
 
     let lines = vec![
@@ -213,7 +213,7 @@ pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             mark(0),
             Span::styled("key  ", Style::default().fg(MUTED)),
-            Span::styled(app.settings_input.clone(), Style::default().fg(TEXT)),
+            Span::styled(form.input.clone(), Style::default().fg(TEXT)),
             cursor(0),
         ]),
         Line::from(Span::styled(

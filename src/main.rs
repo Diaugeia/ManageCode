@@ -11,6 +11,7 @@ mod notifications;
 mod pty;
 mod scanner;
 mod tmux;
+mod tree;
 mod ui;
 mod update;
 mod watcher;
