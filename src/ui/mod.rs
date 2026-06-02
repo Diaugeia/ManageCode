@@ -111,7 +111,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match &app.mode {
         Mode::Filter => draw_filter_overlay(f, area, app),
         Mode::Rename => draw_rename_overlay(f, area, app),
-        Mode::Help => draw_help_overlay(f, area),
+        Mode::Help => draw_help_overlay(f, area, app),
         Mode::Confirm(_) => draw_confirm_overlay(f, area, app),
         Mode::Launch(form) => draw_launch_overlay(f, area, form),
         Mode::Settings => draw_settings_overlay(f, area, app),
@@ -338,6 +338,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         .iter()
         .map(|r| match r {
             Row::Header { .. } => 1,
+            Row::Tree { .. } => 1,
             Row::Session(_) => session_height,
         })
         .collect();
@@ -384,6 +385,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     for (_ri, row) in rows.iter().enumerate().skip(start_row) {
         let h = match row {
             Row::Header { .. } => 1,
+            Row::Tree { .. } => 1,
             Row::Session(_) => session_height,
         } as u16;
         if y + h > max_y {
@@ -404,6 +406,25 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                         height: 1,
                     },
                     cwd,
+                    *total,
+                    *alive,
+                    *collapsed,
+                );
+            }
+            Row::Tree { path, name, depth, total, alive, collapsed } => {
+                app.list_hits
+                    .borrow_mut()
+                    .push((y, 1, RowHit::Header(path.clone())));
+                draw_tree_row(
+                    f,
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                    name,
+                    *depth,
                     *total,
                     *alive,
                     *collapsed,
@@ -459,6 +480,36 @@ fn draw_group_header(f: &mut Frame, area: Rect, cwd: &str, total: usize, alive: 
         format!("{}", total),
         Style::default().fg(MUTED),
     ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_tree_row(
+    f: &mut Frame,
+    area: Rect,
+    name: &str,
+    depth: usize,
+    total: usize,
+    alive: usize,
+    collapsed: bool,
+) {
+    let chevron = if collapsed { "▸" } else { "▾" };
+    let indent = "  ".repeat(depth);
+    let avail = (area.width as usize).saturating_sub(depth * 2 + 12);
+    let mut spans: Vec<Span> = vec![
+        Span::raw(format!(" {}", indent)),
+        Span::styled(format!("{} ", chevron), Style::default().fg(ACCENT_DIM)),
+        Span::styled(
+            truncate(name, avail.max(4)),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+    ];
+    if alive > 0 {
+        spans.push(Span::styled(format!("●{}", alive), Style::default().fg(LIVE)));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(format!("{}", total), Style::default().fg(MUTED)));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -872,38 +923,28 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         return;
     }
     let narrow = matches!(tier, Layoutness::Narrow);
-    let mut hints: Vec<(&str, &str)> = match app.mode {
-        Mode::Browse if narrow => vec![
-            ("⏎", "resume"),
-            ("n", "claude"),
-            ("/", "filter"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Mode::Browse => vec![
-            ("↑↓", "nav"),
-            ("⏎", "resume"),
-            ("n", "new claude"),
-            ("s", "new shell"),
-            ("/", "filter"),
-            ("r", "rename"),
-            ("R", "refresh"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Mode::Filter => vec![("⏎", "apply"), ("\\", "AI search"), ("esc", "cancel")],
-        Mode::Rename => vec![("⏎", "save"), ("esc", "cancel")],
-        Mode::Help | Mode::Confirm(_) => vec![("esc", "close")],
-        Mode::Launch(_) => vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")],
-        Mode::Settings => vec![("⏎", "save"), ("esc", "cancel")],
-        Mode::CostSummary => vec![("esc", "close")],
+    let owned = |v: Vec<(&str, &str)>| -> Vec<(String, String)> {
+        v.into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    };
+    // Browse hints are generated from the central keymap so they never drift
+    // from the actual bindings; other modes are fixed.
+    let mut hints: Vec<(String, String)> = match app.mode {
+        Mode::Browse => app.keymap.footer_hints(narrow),
+        Mode::Filter => owned(vec![("⏎", "apply"), ("\\", "AI search"), ("esc", "cancel")]),
+        Mode::Rename => owned(vec![("⏎", "save"), ("esc", "cancel")]),
+        Mode::Help | Mode::Confirm(_) => owned(vec![("esc", "close")]),
+        Mode::Launch(_) => owned(vec![("⏎", "launch"), ("space", "toggle"), ("esc", "cancel")]),
+        Mode::Settings => owned(vec![("⏎", "save"), ("esc", "cancel")]),
+        Mode::CostSummary => owned(vec![("esc", "close")]),
         // Terminal footer is drawn separately (shows the configured prefix).
         Mode::Terminal => vec![],
     };
 
     // When a terminal is open but the sidebar is focused, advertise how to jump in.
     if matches!(app.mode, Mode::Browse) && app.has_terminal() {
-        hints.insert(0, ("i", "terminal"));
+        hints.insert(0, ("i".to_string(), "terminal".to_string()));
     }
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];

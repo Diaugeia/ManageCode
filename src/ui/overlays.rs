@@ -203,64 +203,39 @@ pub(super) fn draw_settings_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-pub(super) fn draw_help_overlay(f: &mut Frame, area: Rect) {
+pub(super) fn draw_help_overlay(f: &mut Frame, area: Rect, app: &App) {
     let modal = centered(area, 64, 36);
     f.render_widget(Clear, modal);
     let block = panel_block("Help", true);
     let inner = block.inner(modal);
     f.render_widget(block, modal);
 
-    let lines = vec![
-        Line::from(Span::styled(
-            "navigation",
+    // Generated from the central keymap so it always matches the real bindings.
+    let rows = app.keymap.help_rows();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut first = true;
+    for group in crate::keymap::GROUPS {
+        let in_group: Vec<&crate::keymap::HelpRow> =
+            rows.iter().filter(|r| r.group == *group).collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        if !first {
+            lines.push(Line::raw(""));
+        }
+        first = false;
+        lines.push(Line::from(Span::styled(
+            *group,
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        help_row("↑ ↓ / j k", "move selection"),
-        help_row("g / G", "first / last"),
-        help_row("space / tab", "collapse/expand group"),
-        help_row("o / O", "collapse inactive / expand all"),
-        help_row("T", "toggle grouping by directory"),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "session actions",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        help_row("⏎", "resume selected session"),
-        help_row("n", "new claude (defaults)"),
-        help_row("N", "new claude (with options)"),
-        help_row("s", "new shell in cwd"),
-        help_row("r", "rename"),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "tmux multi-session",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        help_row("Ctrl-b d", "detach (inside a tmux session)"),
-        help_row("⏎", "re-attach an existing ▶ background session"),
-        help_row("K", "kill the background tmux session"),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "search & AI",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        help_row("/", "literal filter"),
-        help_row("\\", "AI search (Haiku)"),
-        help_row("A", "auto-name unnamed sessions"),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "maintenance",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        help_row("D", "delete junk sessions"),
-        help_row("E", "delete empty sessions"),
-        help_row("M", "toggle desktop notifications"),
-        help_row("R", "refresh now"),
-        help_row(":", "settings (terminal prefix)"),
-        help_row("c", "cost summary"),
-        help_row("i / l", "focus embedded terminal"),
-        help_row("?", "this help"),
-        help_row("q / ctrl-c", "quit"),
-    ];
+        )));
+        for r in in_group {
+            lines.push(help_row(&r.keys, r.desc));
+        }
+        // Informational (not a binding): how to detach a backgrounded session.
+        if *group == "tmux multi-session" {
+            lines.push(help_row("Ctrl-a / Ctrl-b d", "detach (keeps it running)"));
+        }
+    }
     let p = Paragraph::new(lines).wrap(Wrap { trim: false });
     f.render_widget(p, inner);
 }

@@ -2,6 +2,7 @@ mod ai;
 mod app;
 mod config;
 mod input;
+mod keymap;
 mod launcher;
 mod models;
 mod notifications;

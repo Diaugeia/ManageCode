@@ -22,7 +22,91 @@ pub enum Row {
         alive: usize,
         collapsed: bool,
     },
+    /// A directory node in the tree view. `path` is the full directory path
+    /// (the collapse key); `name` is the (possibly path-compressed) label.
+    Tree {
+        path: String,
+        name: String,
+        depth: usize,
+        total: usize,
+        alive: usize,
+        collapsed: bool,
+    },
     Session(usize), // index into App.sessions
+}
+
+/// How the sidebar lays out sessions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Flat group headers, one per `cwd`.
+    Grouped,
+    /// Nested directory tree (path-compressed), sessions as leaves.
+    Tree,
+    /// No headers — just a flat list of sessions.
+    Flat,
+}
+
+impl ViewMode {
+    fn next(self) -> ViewMode {
+        match self {
+            ViewMode::Grouped => ViewMode::Tree,
+            ViewMode::Tree => ViewMode::Flat,
+            ViewMode::Flat => ViewMode::Grouped,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewMode::Grouped => "grouped by directory",
+            ViewMode::Tree => "directory tree",
+            ViewMode::Flat => "flat list",
+        }
+    }
+}
+
+/// Node in the directory trie used to build the tree view.
+#[derive(Default)]
+struct TreeNode {
+    path: String,
+    name: String,
+    children: std::collections::BTreeMap<String, TreeNode>,
+    sessions: Vec<usize>,
+}
+
+impl TreeNode {
+    /// `(total, alive)` session counts for this node's whole subtree.
+    fn counts(&self, sessions: &[SessionInfo]) -> (usize, usize) {
+        let mut total = self.sessions.len();
+        let mut alive = self
+            .sessions
+            .iter()
+            .filter(|&&i| sessions[i].is_alive)
+            .count();
+        for c in self.children.values() {
+            let (t, a) = c.counts(sessions);
+            total += t;
+            alive += a;
+        }
+        (total, alive)
+    }
+}
+
+/// Is `anc` the same directory as `path`, or an ancestor of it?
+fn is_ancestor_or_eq(anc: &str, path: &str) -> bool {
+    path == anc || path.starts_with(&format!("{anc}/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ancestor_or_eq;
+
+    #[test]
+    fn ancestor_matching() {
+        assert!(is_ancestor_or_eq("/a/b", "/a/b")); // equal
+        assert!(is_ancestor_or_eq("/a/b", "/a/b/c")); // ancestor
+        assert!(!is_ancestor_or_eq("/a/b", "/a/bc")); // not a path boundary
+        assert!(!is_ancestor_or_eq("/a/b", "/a")); // parent, not ancestor
+    }
 }
 
 /// A clickable target in the session list, recorded by the renderer each frame
@@ -230,7 +314,7 @@ pub struct App {
     pub spinner_phase: usize,
     pub message: Option<(String, Instant)>,
     pub custom_names: HashMap<String, String>,
-    pub group_by_directory: bool,
+    pub view: ViewMode,
     pub collapsed_groups: HashSet<String>,
     pub ai_running: bool,
     pub auto_naming: bool,
@@ -254,6 +338,8 @@ pub struct App {
     pub last_click: Option<(usize, Instant)>,
     /// User configuration (escape prefix, etc.).
     pub config: Config,
+    /// Browse-mode keymap, resolved from `config.keys` (drives dispatch + UI).
+    pub keymap: crate::keymap::Keymap,
     /// Editing buffer for the settings overlay.
     pub settings_input: String,
     /// Budget editing buffer for the settings overlay (USD, "" = off).
@@ -309,6 +395,8 @@ impl App {
                 }
             });
         }
+        let config = crate::config::load();
+        let keymap = crate::keymap::Keymap::from_config(&config.keys);
         let mut app = App {
             sessions: Vec::new(),
             selected: 0,
@@ -321,7 +409,7 @@ impl App {
             spinner_phase: 0,
             message: None,
             custom_names: scanner::load_custom_names(),
-            group_by_directory: true,
+            view: ViewMode::Grouped,
             collapsed_groups: HashSet::new(),
             ai_running: false,
             auto_naming: false,
@@ -335,7 +423,8 @@ impl App {
             term_area: Cell::new((0, 0, 80, 24)),
             list_hits: RefCell::new(Vec::new()),
             last_click: None,
-            config: crate::config::load(),
+            config,
+            keymap,
             settings_input: String::new(),
             settings_budget_input: String::new(),
             settings_field: 0,
@@ -562,30 +651,45 @@ impl App {
             .collect()
     }
 
-    /// Sessions visible to the user — same as filtered, minus any inside a
-    /// collapsed group. This is what `selected` indexes into.
+    /// Is a session at `cwd` hidden by the current view's collapse set?
+    fn session_hidden(&self, cwd: &str) -> bool {
+        match self.view {
+            ViewMode::Flat => false,
+            ViewMode::Grouped => self.collapsed_groups.contains(cwd),
+            ViewMode::Tree => self
+                .collapsed_groups
+                .iter()
+                .any(|p| is_ancestor_or_eq(p, cwd)),
+        }
+    }
+
+    /// Sessions visible to the user — filtered, minus any inside a collapsed
+    /// group or subtree. This is what `selected` indexes into.
     pub fn visible_session_indices(&self) -> Vec<usize> {
         let filtered = self.filtered_indices();
-        if !self.group_by_directory || self.collapsed_groups.is_empty() {
+        if matches!(self.view, ViewMode::Flat) || self.collapsed_groups.is_empty() {
             return filtered;
         }
         filtered
             .into_iter()
-            .filter(|&i| !self.collapsed_groups.contains(&self.sessions[i].cwd))
+            .filter(|&i| !self.session_hidden(&self.sessions[i].cwd))
             .collect()
     }
 
-    /// Headers + sessions woven together in display order. Used by the renderer.
+    /// Headers / tree nodes + sessions woven together in display order.
     pub fn visible_rows(&self) -> Vec<Row> {
         let filtered = self.filtered_indices();
-        if !self.group_by_directory {
-            return filtered.into_iter().map(Row::Session).collect();
+        match self.view {
+            ViewMode::Flat => filtered.into_iter().map(Row::Session).collect(),
+            ViewMode::Grouped => self.grouped_rows(&filtered),
+            ViewMode::Tree => self.tree_rows(&filtered),
         }
+    }
 
+    fn grouped_rows(&self, filtered: &[usize]) -> Vec<Row> {
         let mut out: Vec<Row> = Vec::new();
         let mut last_cwd: Option<String> = None;
-
-        for &idx in &filtered {
+        for &idx in filtered {
             let s = &self.sessions[idx];
             if last_cwd.as_deref() != Some(&s.cwd) {
                 last_cwd = Some(s.cwd.clone());
@@ -611,9 +715,74 @@ impl App {
         out
     }
 
+    fn tree_rows(&self, filtered: &[usize]) -> Vec<Row> {
+        let mut root = TreeNode::default();
+        for &idx in filtered {
+            let cwd = self.sessions[idx].cwd.clone();
+            let mut node = &mut root;
+            let mut path = String::new();
+            for c in cwd.split('/').filter(|c| !c.is_empty()) {
+                path.push('/');
+                path.push_str(c);
+                node = node.children.entry(c.to_string()).or_insert_with(|| TreeNode {
+                    path: path.clone(),
+                    name: c.to_string(),
+                    ..TreeNode::default()
+                });
+            }
+            node.sessions.push(idx);
+        }
+
+        let mut out: Vec<Row> = Vec::new();
+        for child in root.children.values() {
+            self.emit_tree(child, 0, &mut out);
+        }
+        out
+    }
+
+    fn emit_tree(&self, node: &TreeNode, depth: usize, out: &mut Vec<Row>) {
+        // Path-compress a chain of single-child, session-less dirs into one row
+        // so `a/b/c` shows as one node when nothing branches.
+        let mut name = node.name.clone();
+        let mut cur = node;
+        while cur.sessions.is_empty() && cur.children.len() == 1 {
+            let child = cur.children.values().next().unwrap();
+            name.push('/');
+            name.push_str(&child.name);
+            cur = child;
+        }
+
+        let (total, alive) = cur.counts(&self.sessions);
+        let collapsed = self.collapsed_groups.contains(&cur.path);
+        out.push(Row::Tree {
+            path: cur.path.clone(),
+            name,
+            depth,
+            total,
+            alive,
+            collapsed,
+        });
+        if collapsed {
+            return;
+        }
+        for k in cur.children.values() {
+            self.emit_tree(k, depth + 1, out);
+        }
+        for &idx in &cur.sessions {
+            out.push(Row::Session(idx));
+        }
+    }
+
     pub fn selected_session(&self) -> Option<&SessionInfo> {
         let idxs = self.visible_session_indices();
         idxs.get(self.selected).and_then(|i| self.sessions.get(*i))
+    }
+
+    /// Cycle the sidebar layout: grouped → tree → flat.
+    pub fn cycle_view(&mut self) {
+        self.view = self.view.next();
+        self.clamp_selection();
+        self.flash(self.view.label());
     }
 
     pub fn toggle_group_of_selection(&mut self) {

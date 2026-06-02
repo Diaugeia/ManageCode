@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{App, ConfirmAction, LaunchForm, Mode, PendingExec, RowHit};
 use crate::config;
+use crate::keymap::BrowseAction;
 use crate::launcher;
 use crate::ExitRequest;
 
@@ -238,25 +239,29 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
     None
 }
 
-fn handle_browse(
-    app: &mut App,
-    code: KeyCode,
-    _mods: KeyModifiers,
-) -> Option<ExitRequest> {
-    match code {
-        KeyCode::Char('q') => return Some(ExitRequest::Quit),
-        KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
-        KeyCode::PageUp => app.move_selection(-10),
-        KeyCode::PageDown => app.move_selection(10),
-        KeyCode::Char('g') => app.selected = 0,
-        KeyCode::Char('G') => {
+fn handle_browse(app: &mut App, code: KeyCode, _mods: KeyModifiers) -> Option<ExitRequest> {
+    let action = app.keymap.action_for(code)?;
+    perform_browse(app, action)
+}
+
+/// Execute a resolved Browse action. All Browse key behavior lives here; the
+/// key→action mapping lives in `keymap`.
+fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
+    use BrowseAction::*;
+    match action {
+        Quit => return Some(ExitRequest::Quit),
+        Up => app.move_selection(-1),
+        Down => app.move_selection(1),
+        PageUp => app.move_selection(-10),
+        PageDown => app.move_selection(10),
+        Top => app.selected = 0,
+        Bottom => {
             let n = app.filtered_indices().len();
             if n > 0 {
                 app.selected = n - 1;
             }
         }
-        KeyCode::Enter => {
+        Open => {
             if let Some(s) = app.selected_session() {
                 let id = s.id.clone();
                 let cwd = s.cwd.clone();
@@ -265,13 +270,13 @@ fn handle_browse(
                 launcher::open_terminal_for(app, PendingExec::Resume { id, cwd, is_alive, source });
             }
         }
-        KeyCode::Char('n') => {
+        NewClaude => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
                 launcher::open_terminal_for(app, PendingExec::NewClaude { cwd });
             }
         }
-        KeyCode::Char('N') => {
+        LaunchForm => {
             // Open the launch options form for a brand new session.
             let cwd = app
                 .selected_session()
@@ -282,56 +287,45 @@ fn handle_browse(
                         .unwrap_or_default()
                 });
             let dirs = app.recent_dirs();
-            app.mode = Mode::Launch(LaunchForm::new(cwd, dirs));
+            app.mode = Mode::Launch(crate::app::LaunchForm::new(cwd, dirs));
         }
-        KeyCode::Char('s') => {
+        NewShell => {
             if let Some(s) = app.selected_session() {
                 let cwd = s.cwd.clone();
                 launcher::open_terminal_for(app, PendingExec::NewShell { cwd });
             }
         }
-        // vim-style: move focus into the terminal pane (insert). No-op unless a
-        // terminal is open.
-        KeyCode::Char('i') | KeyCode::Char('l') => {
+        FocusTerminal => {
+            // vim-style: move focus into the terminal pane. No-op unless open.
             if app.has_terminal() {
                 app.focus_terminal();
             }
         }
-        KeyCode::Char('/') => {
+        Filter => {
             app.filter.clear();
             app.mode = Mode::Filter;
         }
-        KeyCode::Char('r') => {
+        Rename => {
             if let Some(s) = app.selected_session() {
                 app.rename_buf = s.name.clone();
                 app.mode = Mode::Rename;
             }
         }
-        KeyCode::Char('R') => {
+        Refresh => {
             app.kick_scan();
             app.flash("refreshing…");
         }
-        KeyCode::Char(' ') | KeyCode::Tab => {
-            app.toggle_group_of_selection();
-        }
-        KeyCode::Char('o') => {
+        ToggleGroup => app.toggle_group_of_selection(),
+        CollapseInactive => {
             app.collapse_all_inactive();
             app.flash("collapsed inactive groups");
         }
-        KeyCode::Char('O') => {
+        ExpandAll => {
             app.collapsed_groups.clear();
             app.flash("expanded all groups");
         }
-        KeyCode::Char('T') => {
-            app.group_by_directory = !app.group_by_directory;
-            app.clamp_selection();
-            app.flash(if app.group_by_directory {
-                "grouping by directory"
-            } else {
-                "flat list"
-            });
-        }
-        KeyCode::Char('M') => {
+        CycleView => app.cycle_view(),
+        ToggleMute => {
             app.notifier.enabled = !app.notifier.enabled;
             app.flash(if app.notifier.enabled {
                 "notifications on"
@@ -339,16 +333,10 @@ fn handle_browse(
                 "notifications muted"
             });
         }
-        KeyCode::Char('?') => {
-            app.mode = Mode::Help;
-        }
-        KeyCode::Char(':') => {
-            app.open_settings();
-        }
-        KeyCode::Char('c') => {
-            app.mode = Mode::CostSummary;
-        }
-        KeyCode::Char('\\') => {
+        Help => app.mode = Mode::Help,
+        Settings => app.open_settings(),
+        CostSummary => app.mode = Mode::CostSummary,
+        AiSearch => {
             // Prompt-less AI search: use current filter buffer as the query.
             if app.filter.is_empty() {
                 app.flash("type / first, then \\ to run AI search");
@@ -358,7 +346,7 @@ fn handle_browse(
                 app.flash("AI searching…");
             }
         }
-        KeyCode::Char('A') => {
+        AutoName => {
             app.kick_auto_name();
             if app.auto_naming {
                 app.flash(format!(
@@ -367,16 +355,9 @@ fn handle_browse(
                 ));
             }
         }
-        KeyCode::Char('D') => {
-            app.mode = Mode::Confirm(ConfirmAction::DeleteJunk);
-        }
-        KeyCode::Char('E') => {
-            app.mode = Mode::Confirm(ConfirmAction::DeleteEmpty);
-        }
-        KeyCode::Char('K') => {
-            app.ask_kill_tmux();
-        }
-        _ => {}
+        DeleteJunk => app.mode = Mode::Confirm(ConfirmAction::DeleteJunk),
+        DeleteEmpty => app.mode = Mode::Confirm(ConfirmAction::DeleteEmpty),
+        KillTmux => app.ask_kill_tmux(),
     }
     None
 }

@@ -26,6 +26,10 @@ pub struct Config {
     /// server tidy; set false to leave them running in the background.
     #[serde(default = "default_true")]
     pub cleanup_tmux_on_exit: bool,
+    /// Per-action key overrides for Browse mode, e.g. {"quit": "x"}. Action
+    /// names match `keymap::BrowseAction::name()`. Empty = use the defaults.
+    #[serde(default)]
+    pub keys: std::collections::HashMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -39,6 +43,7 @@ impl Default for Config {
             daily_budget_usd: None,
             prefer_tmux: true,
             cleanup_tmux_on_exit: true,
+            keys: std::collections::HashMap::new(),
         }
     }
 }
