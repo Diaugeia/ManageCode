@@ -167,7 +167,8 @@ fn handle_list_click(app: &mut App, y: u16) {
                 if let Some(s) = app.selected_session() {
                     let id = s.id.clone();
                     let cwd = s.cwd.clone();
-                    launcher::open_terminal_for(app, PendingExec::Resume { id, cwd });
+                    let is_alive = s.is_alive;
+                    launcher::open_terminal_for(app, PendingExec::Resume { id, cwd, is_alive });
                 }
             } else {
                 app.last_click = Some((pos, now));
@@ -255,7 +256,8 @@ fn handle_browse(
             if let Some(s) = app.selected_session() {
                 let id = s.id.clone();
                 let cwd = s.cwd.clone();
-                launcher::open_terminal_for(app, PendingExec::Resume { id, cwd });
+                let is_alive = s.is_alive;
+                launcher::open_terminal_for(app, PendingExec::Resume { id, cwd, is_alive });
             }
         }
         KeyCode::Char('n') => {

@@ -62,10 +62,19 @@ pub fn open_terminal_for(app: &mut App, pending: PendingExec) {
         return;
     };
     let spec = match pending {
-        PendingExec::Resume { id, cwd } => {
+        PendingExec::Resume { id, cwd, is_alive } => {
             if use_tmux {
                 let name = tmux::resume_name(&id);
                 let cmd = tmux::join_command(&[&claude, "--resume", &id]);
+                // A dead (historical) session must actually re-run
+                // `claude --resume <id>`. Kill any stale backing session first
+                // so we don't re-attach to an exited/empty pane (which can
+                // linger under a `remain-on-exit` tmux config). A live session
+                // keeps its running process: ensure_session is then a no-op and
+                // we simply re-attach.
+                if !is_alive {
+                    tmux::kill_session(&name);
+                }
                 tmux::ensure_session(&name, &cwd, &cmd);
                 attach_spec(&name, &cwd, "claude")
             } else {

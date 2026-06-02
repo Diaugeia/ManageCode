@@ -283,7 +283,7 @@ pub enum AiEvent {
 
 #[derive(Clone)]
 pub enum PendingExec {
-    Resume { id: String, cwd: String },
+    Resume { id: String, cwd: String, is_alive: bool },
     NewClaude { cwd: String },
     NewShell { cwd: String },
     Custom { cwd: String, args: Vec<String> },
