@@ -240,6 +240,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             format!("{} total", count),
             Style::default().fg(TEXT),
         ));
+        let codex_n = app.codex_count();
+        if codex_n > 0 {
+            spans.push(sep(MUTED));
+            spans.push(Span::styled(
+                format!("▷ {} codex", codex_n),
+                Style::default().fg(Color::Rgb(0x8B, 0xC9, 0x8B)),
+            ));
+        }
         spans.push(sep(MUTED));
         spans.push(Span::styled(
             format!("${:.2}", total),
@@ -616,6 +624,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
     let compact = matches!(tier, Layoutness::Stacked);
     lines.push(meta_row("session", short_id(&session.id)));
+    if session.source == crate::models::Source::Codex {
+        lines.push(meta_row("source", session.source.tag().to_string()));
+    }
     lines.push(meta_row(
         "model",
         session.model.clone().unwrap_or_else(|| "—".into()),

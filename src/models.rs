@@ -30,8 +30,28 @@ impl TokenUsage {
     }
 }
 
+/// Which AI CLI a session belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl Source {
+    /// Short lowercase tag for display, e.g. in the session list / detail pane.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Source::Claude => "claude",
+            Source::Codex => "codex",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
+    /// Which CLI produced this session (Claude Code vs. OpenAI Codex).
+    pub source: Source,
     pub id: String,
     pub pid: i32,
     pub name: String,

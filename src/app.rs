@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::ai;
 use crate::config::Config;
-use crate::models::SessionInfo;
+use crate::models::{SessionInfo, Source};
 use crate::notifications::Notifier;
 use crate::pty::{TermSession, TerminalSpec};
 use crate::scanner;
@@ -283,7 +283,12 @@ pub enum AiEvent {
 
 #[derive(Clone)]
 pub enum PendingExec {
-    Resume { id: String, cwd: String, is_alive: bool },
+    Resume {
+        id: String,
+        cwd: String,
+        is_alive: bool,
+        source: Source,
+    },
     NewClaude { cwd: String },
     NewShell { cwd: String },
     Custom { cwd: String, args: Vec<String> },
@@ -809,6 +814,13 @@ impl App {
 
     pub fn tmux_count(&self) -> usize {
         self.tmux_backed.len()
+    }
+
+    pub fn codex_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|s| s.source == Source::Codex)
+            .count()
     }
 
     pub fn total_cost(&self) -> f64 {
