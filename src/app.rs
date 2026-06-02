@@ -32,7 +32,9 @@ pub enum Row {
         alive: usize,
         collapsed: bool,
     },
-    Session(usize), // index into App.sessions
+    /// A session leaf. `depth` is extra tree-nesting indentation (0 in Grouped
+    /// and Flat views; the parent node's depth in Tree view).
+    Session { idx: usize, depth: usize }, // idx into App.sessions
 }
 
 /// How the sidebar lays out sessions.
@@ -144,6 +146,8 @@ pub enum Mode {
     CostSummary,
     /// Choosing a target directory to migrate the selected session's memory to.
     MigrateMemory,
+    /// Choosing the Tree-view root directory.
+    TreeRoot,
 }
 
 #[derive(Clone)]
@@ -353,6 +357,13 @@ pub struct App {
     pub list_hits: RefCell<Vec<(u16, u16, RowHit)>>,
     /// Last left-click (visible-list position, when) for double-click detection.
     pub last_click: Option<(usize, Instant)>,
+    /// Tree-view root: only sessions under this dir appear in Tree view. Empty
+    /// means "everything" (no scoping). Resolved from config or the launch cwd.
+    pub tree_root: String,
+    /// Edit buffer for the Tree-root picker overlay.
+    pub tree_root_input: String,
+    /// Whether the last key was a `z` fold prefix, awaiting `a`/`R`/`M`.
+    pub pending_z: bool,
     /// User configuration (escape prefix, etc.).
     pub config: Config,
     /// Browse-mode keymap, resolved from `config.keys` (drives dispatch + UI).
@@ -415,6 +426,14 @@ impl App {
         let keymap = crate::keymap::Keymap::from_config(&config.keys);
         let history_days = history_days.unwrap_or(config.history_days);
         let view = ViewMode::from_label(&config.default_view);
+        // Tree root: configured value, else the directory we were launched from.
+        let tree_root = if config.tree_root.is_empty() {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            config.tree_root.clone()
+        };
         let notifications = config.notifications;
         let check_updates = update_check.unwrap_or(config.update_check);
 
@@ -457,6 +476,9 @@ impl App {
             term_area: Cell::new((0, 0, 80, 24)),
             list_hits: RefCell::new(Vec::new()),
             last_click: None,
+            tree_root,
+            tree_root_input: String::new(),
+            pending_z: false,
             config,
             keymap,
             settings_input: String::new(),
@@ -719,16 +741,31 @@ impl App {
         }
     }
 
+    /// In Tree view, is `cwd` within the configured root? Always true in other
+    /// views or when no root is set.
+    fn in_tree_scope(&self, cwd: &str) -> bool {
+        if !matches!(self.view, ViewMode::Tree) || self.tree_root.is_empty() {
+            return true;
+        }
+        is_ancestor_or_eq(&self.tree_root, cwd)
+    }
+
     /// Sessions visible to the user — filtered, minus any inside a collapsed
-    /// group or subtree. This is what `selected` indexes into.
+    /// group or subtree, and (in Tree view) outside the root. This is what
+    /// `selected` indexes into.
     pub fn visible_session_indices(&self) -> Vec<usize> {
         let filtered = self.filtered_indices();
-        if matches!(self.view, ViewMode::Flat) || self.collapsed_groups.is_empty() {
+        let root_scoped = matches!(self.view, ViewMode::Tree) && !self.tree_root.is_empty();
+        if matches!(self.view, ViewMode::Flat) || (self.collapsed_groups.is_empty() && !root_scoped)
+        {
             return filtered;
         }
         filtered
             .into_iter()
-            .filter(|&i| !self.session_hidden(&self.sessions[i].cwd))
+            .filter(|&i| {
+                let cwd = &self.sessions[i].cwd;
+                !self.session_hidden(cwd) && self.in_tree_scope(cwd)
+            })
             .collect()
     }
 
@@ -736,7 +773,10 @@ impl App {
     pub fn visible_rows(&self) -> Vec<Row> {
         let filtered = self.filtered_indices();
         match self.view {
-            ViewMode::Flat => filtered.into_iter().map(Row::Session).collect(),
+            ViewMode::Flat => filtered
+                .into_iter()
+                .map(|idx| Row::Session { idx, depth: 0 })
+                .collect(),
             ViewMode::Grouped => self.grouped_rows(&filtered),
             ViewMode::Tree => self.tree_rows(&filtered),
         }
@@ -770,7 +810,7 @@ impl App {
                 });
             }
             if !self.collapsed_groups.contains(&s.cwd) {
-                out.push(Row::Session(idx));
+                out.push(Row::Session { idx, depth: 0 });
             }
         }
         out
@@ -780,6 +820,9 @@ impl App {
         let mut root = TreeNode::default();
         for &idx in filtered {
             let cwd = self.sessions[idx].cwd.clone();
+            if !self.in_tree_scope(&cwd) {
+                continue;
+            }
             let mut node = &mut root;
             let mut path = String::new();
             for c in cwd.split('/').filter(|c| !c.is_empty()) {
@@ -833,7 +876,7 @@ impl App {
             self.emit_tree(k, depth + 1, out);
         }
         for &idx in &cur.sessions {
-            out.push(Row::Session(idx));
+            out.push(Row::Session { idx, depth });
         }
     }
 
@@ -877,6 +920,83 @@ impl App {
             }
         }
         self.clamp_selection();
+    }
+
+    /// Collapse every group (Grouped) or every directory node (Tree). No-op in
+    /// Flat view. Bound to `zM`.
+    pub fn collapse_all(&mut self) {
+        match self.view {
+            ViewMode::Grouped => {
+                let cwds: Vec<String> = self.sessions.iter().map(|s| s.cwd.clone()).collect();
+                self.collapsed_groups.extend(cwds);
+            }
+            ViewMode::Tree => {
+                // Collapse every ancestor path so the tree folds to its roots.
+                let cwds: Vec<String> = self.sessions.iter().map(|s| s.cwd.clone()).collect();
+                for cwd in cwds {
+                    let mut path = String::new();
+                    for c in cwd.split('/').filter(|c| !c.is_empty()) {
+                        path.push('/');
+                        path.push_str(c);
+                        self.collapsed_groups.insert(path.clone());
+                    }
+                }
+            }
+            ViewMode::Flat => {}
+        }
+        self.clamp_selection();
+    }
+
+    /// Open the Tree-root picker, seeded with the current root (or launch cwd).
+    pub fn open_tree_root(&mut self) {
+        self.tree_root_input = if self.tree_root.is_empty() {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            self.tree_root.clone()
+        };
+        self.mode = Mode::TreeRoot;
+    }
+
+    /// Apply the Tree-root picker: scope the tree, persist, and switch to Tree
+    /// view. An empty input clears the root (show everything).
+    pub fn apply_tree_root(&mut self) {
+        let dir = self.tree_root_input.trim().to_string();
+        self.tree_root = dir.clone();
+        self.config.tree_root = dir;
+        let _ = crate::config::save(&self.config);
+        self.view = ViewMode::Tree;
+        self.clamp_selection();
+        if self.tree_root.is_empty() {
+            self.flash("tree root cleared (showing all)");
+        } else {
+            self.flash(format!(
+                "tree root → {}",
+                crate::models::short_path(&self.tree_root)
+            ));
+        }
+        self.mode = Mode::Browse;
+    }
+
+    /// Candidate root dirs for the picker: launch cwd, home, then session dirs.
+    pub fn root_candidates(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if let Ok(c) = std::env::current_dir() {
+            out.push(c.to_string_lossy().to_string());
+        }
+        if let Some(h) = dirs::home_dir() {
+            let h = h.to_string_lossy().to_string();
+            if !out.contains(&h) {
+                out.push(h);
+            }
+        }
+        for d in self.recent_dirs() {
+            if !out.contains(&d) {
+                out.push(d);
+            }
+        }
+        out
     }
 
     pub fn clamp_selection(&mut self) {
@@ -1067,13 +1187,6 @@ impl App {
 
     pub fn tmux_count(&self) -> usize {
         self.tmux_backed.len()
-    }
-
-    pub fn codex_count(&self) -> usize {
-        self.sessions
-            .iter()
-            .filter(|s| s.source == Source::Codex)
-            .count()
     }
 
     pub fn total_cost(&self) -> f64 {

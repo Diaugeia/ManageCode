@@ -16,7 +16,9 @@ your active bindings.
 | `g` / `G` | first / last | `top` / `bottom` |
 | `space` / `tab` | collapse / expand the current group | `toggle_group` |
 | `o` / `O` | collapse inactive / expand all | `collapse_inactive` / `expand_all` |
+| `za` / `zR` / `zM` | vim folds: toggle current · expand all · collapse all | — |
 | `T` | cycle view: grouped → tree → flat | `cycle_view` |
+| `b` | set the tree-view root directory (only sessions under it show) | `set_tree_root` |
 
 **Sessions**
 
@@ -26,7 +28,7 @@ your active bindings.
 | `i` / `l` | focus the terminal pane | `focus_terminal` |
 | `n` | new `claude` in that cwd (defaults) | `new_claude` |
 | `N` | new `claude` with the options form | `launch_form` |
-| `s` | new shell in that cwd | `new_shell` |
+| `s` | new shell in that cwd — a terminal, no `claude` | `new_shell` |
 | `r` | rename | `rename` |
 | `x` | convert record to the other tool (Claude ↔ Codex) | `convert` |
 | `X` | migrate memory (CLAUDE.md / AGENTS.md) to another directory | `migrate_memory` |

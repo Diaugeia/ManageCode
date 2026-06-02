@@ -74,6 +74,31 @@ pub(super) fn draw_migrate_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+pub(super) fn draw_tree_root_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let modal = centered(area, 70, 7);
+    f.render_widget(Clear, modal);
+    let block = panel_block("Tree root", true);
+    let inner = block.inner(modal);
+    f.render_widget(block, modal);
+    let lines = vec![
+        Line::from(Span::styled(
+            "show only sessions under this directory",
+            Style::default().fg(MUTED),
+        )),
+        Line::from(vec![
+            Span::styled("root  › ", Style::default().fg(ACCENT)),
+            Span::styled(short_path(&app.tree_root_input), Style::default().fg(TEXT)),
+            Span::styled("▏", Style::default().fg(ACCENT).slow_blink()),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "←→ cwd / home / recent  ·  empty = show all  ·  ⏎ apply",
+            Style::default().fg(MUTED),
+        )),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 pub(super) fn draw_cost_summary_overlay(f: &mut Frame, area: Rect, app: &App) {
     use std::collections::HashMap;
 
@@ -268,6 +293,13 @@ pub(super) fn draw_help_overlay(f: &mut Frame, area: Rect, app: &App) {
         )));
         for r in in_group {
             lines.push(help_row(&r.keys, r.desc));
+        }
+        // Vim-style fold prefix (handled outside the keymap table).
+        if *group == "navigation" {
+            lines.push(help_row(
+                "za / zR / zM",
+                "toggle / expand all / collapse all",
+            ));
         }
         // Informational (not a binding): how to detach a backgrounded session.
         if *group == "tmux multi-session" {

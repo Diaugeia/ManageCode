@@ -9,6 +9,8 @@ versions is migrated to TOML automatically on first run.
 
 # --- General ---
 default_view      = "grouped"   # initial sidebar layout: "grouped" | "tree" | "flat"
+show_cost         = false       # show each session's cost, right-aligned (toggle in code only)
+tree_root         = ""          # tree-view root; only sessions under it show ("" = launch cwd, set with `b`)
 history_days      = 30          # how far back to scan (the --days flag overrides this)
 # daily_budget_usd = 25.0       # header alert when today's spend crosses it (omit = off)
 notifications     = true        # desktop banner when a busy session goes idle

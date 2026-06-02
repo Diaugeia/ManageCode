@@ -117,6 +117,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Settings => draw_settings_overlay(f, area, app),
         Mode::CostSummary => draw_cost_summary_overlay(f, area, app),
         Mode::MigrateMemory => draw_migrate_overlay(f, area, app),
+        Mode::TreeRoot => draw_tree_root_overlay(f, area, app),
         Mode::Browse => {}
         // Handled inline by the sidebar+terminal layout; no modal overlay.
         Mode::Terminal => {}
@@ -238,14 +239,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             format!("{} total", count),
             Style::default().fg(TEXT),
         ));
-        let codex_n = app.codex_count();
-        if codex_n > 0 {
-            spans.push(sep(MUTED));
-            spans.push(Span::styled(
-                format!("▷ {} codex", codex_n),
-                Style::default().fg(Color::Rgb(0x8B, 0xC9, 0x8B)),
-            ));
-        }
         spans.push(sep(MUTED));
         spans.push(Span::styled(
             format!("${:.2}", total),
@@ -344,7 +337,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         .map(|r| match r {
             Row::Header { .. } => 1,
             Row::Tree { .. } => 1,
-            Row::Session(_) => session_height,
+            Row::Session { .. } => session_height,
         })
         .collect();
 
@@ -357,7 +350,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         let target = selected_session_real;
         let mut chosen = 0usize;
         for (i, r) in rows.iter().enumerate() {
-            if let Row::Session(idx) = r {
+            if let Row::Session { idx, .. } = r {
                 if Some(*idx) == target {
                     chosen = i;
                     break;
@@ -392,7 +385,7 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
         let h = match row {
             Row::Header { .. } => 1,
             Row::Tree { .. } => 1,
-            Row::Session(_) => session_height,
+            Row::Session { .. } => session_height,
         } as u16;
         if y + h > max_y {
             break;
@@ -448,7 +441,10 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     *collapsed,
                 );
             }
-            Row::Session(real_idx) => {
+            Row::Session {
+                idx: real_idx,
+                depth,
+            } => {
                 app.list_hits
                     .borrow_mut()
                     .push((y, h, RowHit::Session(*real_idx)));
@@ -467,6 +463,8 @@ fn draw_session_list(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
                     selected,
                     tmux_backed,
                     tier,
+                    *depth,
+                    app.config.show_cost,
                 );
             }
         }
@@ -542,6 +540,7 @@ fn draw_tree_row(
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_session_row(
     f: &mut Frame,
     area: Rect,
@@ -549,6 +548,8 @@ fn draw_session_row(
     selected: bool,
     tmux_backed: bool,
     tier: Layoutness,
+    depth: usize,
+    show_cost: bool,
 ) {
     let bullet = if tmux_backed {
         "▶"
@@ -594,27 +595,30 @@ fn draw_session_row(
     };
 
     let model_label = model_short(session.model.as_deref());
-    let cost_str = format!(" ${:>6.2} ", session.cost);
     let model_str = format!(" {} ", model_label);
-
-    // Indent under group header for visual hierarchy.
-    let indent = if tier == Layoutness::Narrow {
-        "  "
+    // Cost is opt-in (config.show_cost) and right-aligned to the far edge.
+    let cost_str = if show_cost {
+        format!(" ${:>6.2} ", session.cost)
     } else {
-        "   "
+        String::new()
     };
-    let name_width = (area.width as i32)
-        - indent.len() as i32
-        - 4
-        - cost_str.len() as i32
-        - model_str.len() as i32;
-    let name = truncate(&session.name, name_width.max(4) as usize);
+
+    // Base indent gives the group/flat hierarchy; `depth` adds tree nesting.
+    let base = if tier == Layoutness::Narrow { 2 } else { 3 };
+    let indent = " ".repeat(base + depth * 2);
+    // bullet span is "{glyph} " = 2 cols.
+    let right = model_str.chars().count() + cost_str.chars().count();
+    let avail = (area.width as usize).saturating_sub(indent.len() + 2 + right);
+    let name = truncate(&session.name, avail.max(4));
+    // Pad between name and the right-aligned model/cost block.
+    let pad = avail.saturating_sub(name.chars().count());
 
     let row1 = Line::from(vec![
-        Span::raw(indent),
+        Span::raw(indent.clone()),
         Span::styled(format!("{} ", bullet), Style::default().fg(bullet_color)),
         Span::styled(name, name_style),
-        Span::raw(" "),
+        // Highlight the gap too when selected, for a continuous selection bar.
+        Span::styled(" ".repeat(pad), name_style),
         Span::styled(model_str, model_style),
         Span::styled(cost_str, cost_style),
     ]);
@@ -976,6 +980,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
             ("←→", "recent dir"),
             ("esc", "cancel"),
         ]),
+        Mode::TreeRoot => owned(vec![("⏎", "set root"), ("←→", "dir"), ("esc", "cancel")]),
         Mode::Help | Mode::Confirm(_) => owned(vec![("esc", "close")]),
         Mode::Launch(_) => owned(vec![
             ("⏎", "launch"),
