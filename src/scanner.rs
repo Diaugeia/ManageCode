@@ -190,14 +190,30 @@ fn parse_usage_with_meta(
             .get("cache_read_input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let cc_t = u
+        // Cache-write tokens split into 5-minute and 1-hour tiers (the 1h tier
+        // bills higher). Newer Claude usage records the split under
+        // `cache_creation`; older records only carry the aggregate, which we
+        // treat as the 5-minute tier.
+        let cc_total = u
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let (cc_5m, cc_1h) = match u.get("cache_creation").and_then(|v| v.as_object()) {
+            Some(cc) => (
+                cc.get("ephemeral_5m_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                cc.get("ephemeral_1h_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ),
+            None => (cc_total, 0),
+        };
         usage.total_input += in_t;
         usage.total_output += out_t;
         usage.cache_read += cr_t;
-        usage.cache_creation += cc_t;
+        usage.cache_creation_5m += cc_5m;
+        usage.cache_creation_1h += cc_1h;
         if obj.get("isSidechain").and_then(|v| v.as_bool()) != Some(true) {
             usage.message_count += 1;
         }
@@ -207,12 +223,13 @@ fn parse_usage_with_meta(
         }
 
         // Bucket this message's cost by the day it was sent (local time).
-        let (pi, po, pcr, pcw) =
+        let (pi, po, pcr, pcw5, pcw1) =
             crate::models::pricing_for(msg_model.as_deref().or(model.as_deref()));
         let msg_cost = (in_t as f64) / 1_000_000.0 * pi
             + (out_t as f64) / 1_000_000.0 * po
             + (cr_t as f64) / 1_000_000.0 * pcr
-            + (cc_t as f64) / 1_000_000.0 * pcw;
+            + (cc_5m as f64) / 1_000_000.0 * pcw5
+            + (cc_1h as f64) / 1_000_000.0 * pcw1;
         if let Some(day) = obj
             .get("timestamp")
             .and_then(|v| v.as_str())

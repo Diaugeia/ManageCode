@@ -640,7 +640,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
     )));
     lines.push(token_row("input", session.usage.total_input));
     lines.push(token_row("cache read", session.usage.cache_read));
-    lines.push(token_row("cache write", session.usage.cache_creation));
+    lines.push(token_row("cache write", session.usage.cache_creation()));
     lines.push(token_row("output", session.usage.total_output));
     lines.push(meta_row(
         "messages",
@@ -690,7 +690,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, tier: Layoutness) {
 
 fn draw_token_mix(f: &mut Frame, area: Rect, s: &SessionInfo) {
     let u = &s.usage;
-    let total = (u.total_input + u.cache_read + u.cache_creation + u.total_output) as f64;
+    let total = (u.total_input + u.cache_read + u.cache_creation() + u.total_output) as f64;
     if total < 1.0 {
         return;
     }
@@ -745,7 +745,7 @@ fn short_id(id: &str) -> String {
 }
 
 fn saved_by_cache(s: &SessionInfo) -> f64 {
-    let (pi, _po, pcr, _pcw) = crate::models::pricing_for(s.model.as_deref());
+    let (pi, _po, pcr, _pcw5, _pcw1) = crate::models::pricing_for(s.model.as_deref());
     let full_price = s.usage.cache_read as f64 / 1_000_000.0 * pi;
     let actual = s.usage.cache_read as f64 / 1_000_000.0 * pcr;
     (full_price - actual).max(0.0)
