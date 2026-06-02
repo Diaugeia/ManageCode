@@ -42,7 +42,7 @@ modern TUI — one static binary, no runtime.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Minions-Land/ManageCode/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Diaugeia/ManageCode/main/install.sh | bash
 ```
 
 The script downloads the prebuilt binary for your platform and installs it to
