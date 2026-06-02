@@ -48,6 +48,10 @@ pub fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Option<Ex
             handle_migrate(app, code);
             None
         }
+        Mode::TreeRoot => {
+            handle_tree_root(app, code);
+            None
+        }
         Mode::Settings => {
             handle_settings(app, code);
             None
@@ -249,6 +253,27 @@ fn handle_launch(app: &mut App, code: KeyCode) -> Option<ExitRequest> {
 }
 
 fn handle_browse(app: &mut App, code: KeyCode, _mods: KeyModifiers) -> Option<ExitRequest> {
+    // vim-style `z` fold prefix: `za` toggle, `zR` expand all, `zM` collapse all.
+    if app.pending_z {
+        app.pending_z = false;
+        match code {
+            KeyCode::Char('a') => app.toggle_group_of_selection(),
+            KeyCode::Char('R') => {
+                app.collapsed_groups.clear();
+                app.flash("expanded all");
+            }
+            KeyCode::Char('M') => {
+                app.collapse_all();
+                app.flash("collapsed all");
+            }
+            _ => {}
+        }
+        return None;
+    }
+    if matches!(code, KeyCode::Char('z')) {
+        app.pending_z = true;
+        return None;
+    }
     let action = app.keymap.action_for(code)?;
     perform_browse(app, action)
 }
@@ -395,6 +420,7 @@ fn perform_browse(app: &mut App, action: BrowseAction) -> Option<ExitRequest> {
             }
         }
         MigrateMemory => app.open_migrate(),
+        SetTreeRoot => app.open_tree_root(),
     }
     None
 }
@@ -486,6 +512,36 @@ fn handle_migrate(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char(c) => {
             app.migrate_input.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_tree_root(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.tree_root_input.clear();
+            app.mode = Mode::Browse;
+        }
+        KeyCode::Enter => app.apply_tree_root(),
+        KeyCode::Backspace => {
+            app.tree_root_input.pop();
+        }
+        // Left/Right cycle launch cwd → home → recently-seen directories.
+        KeyCode::Left | KeyCode::Right => {
+            let dirs = app.root_candidates();
+            if !dirs.is_empty() {
+                let cur = dirs.iter().position(|d| *d == app.tree_root_input);
+                let next = match (cur, code) {
+                    (Some(i), KeyCode::Right) => (i + 1) % dirs.len(),
+                    (Some(i), KeyCode::Left) => (i + dirs.len() - 1) % dirs.len(),
+                    _ => 0,
+                };
+                app.tree_root_input = dirs[next].clone();
+            }
+        }
+        KeyCode::Char(c) => {
+            app.tree_root_input.push(c);
         }
         _ => {}
     }

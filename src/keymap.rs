@@ -42,6 +42,7 @@ pub enum BrowseAction {
     KillTmux,
     Convert,
     MigrateMemory,
+    SetTreeRoot,
 }
 
 impl BrowseAction {
@@ -79,6 +80,7 @@ impl BrowseAction {
             KillTmux => "kill_tmux",
             Convert => "convert",
             MigrateMemory => "migrate_memory",
+            SetTreeRoot => "set_tree_root",
         }
     }
 
@@ -116,6 +118,7 @@ impl BrowseAction {
             KillTmux,
             Convert,
             MigrateMemory,
+            SetTreeRoot,
         ]
         .into_iter()
         .find(|a| a.name() == s)
@@ -284,6 +287,15 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         footer_narrow: false,
     },
     Binding {
+        action: A::SetTreeRoot,
+        keys: &[Char('b')],
+        group: Some("navigation"),
+        help_keys: None,
+        help: Some("set tree root directory"),
+        footer: None,
+        footer_narrow: false,
+    },
+    Binding {
         action: A::Open,
         keys: &[Enter],
         group: Some("session actions"),
@@ -315,9 +327,9 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         keys: &[Char('s')],
         group: Some("session actions"),
         help_keys: None,
-        help: Some("new shell in cwd"),
-        footer: Some(("s", "new shell")),
-        footer_narrow: false,
+        help: Some("new shell in cwd (terminal, no claude)"),
+        footer: Some(("s", "shell")),
+        footer_narrow: true,
     },
     Binding {
         action: A::Rename,

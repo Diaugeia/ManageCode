@@ -17,6 +17,11 @@ pub struct Config {
     // --- General ---
     /// Initial sidebar layout: "grouped" | "tree" | "flat".
     pub default_view: String,
+    /// Show the per-session cost (right-aligned) in the list. Off by default.
+    pub show_cost: bool,
+    /// Tree-view root directory; only sessions under it are shown. Empty = the
+    /// directory ManageCode was launched from. Set at runtime via the root picker.
+    pub tree_root: String,
     /// How far back to scan, in days. The `--days` flag overrides this.
     pub history_days: i64,
     /// Daily spend ceiling in USD; alert when today's cost reaches it. None = off.
@@ -64,6 +69,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             default_view: "grouped".to_string(),
+            show_cost: false,
+            tree_root: String::new(),
             history_days: 30,
             daily_budget_usd: None,
             notifications: true,
