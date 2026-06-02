@@ -55,6 +55,15 @@ Update later with `managecode --update` (or re-run the install command).
 ManageCode also checks for a newer release on startup and shows an `⬆` hint;
 silence it with `--no-update-check` or `update_check = false` in the config.
 
+To uninstall, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Diaugeia/ManageCode/main/uninstall.sh | bash
+```
+
+This removes the binary from `~/.local/bin`. Add `--purge` to also delete the
+config directory (`~/.managecode`); `~/.claude` and `~/.codex` are never touched.
+
 ## First run
 
 ```bash
@@ -96,7 +105,7 @@ Press `?` any time for the full, always-up-to-date keymap.
 ## Build from source
 
 ```bash
-git clone https://github.com/Minions-Land/ManageCode.git
+git clone https://github.com/Diaugeia/ManageCode.git
 cd ManageCode
 ./build.sh        # or: cargo build --release
 ```

@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation
-    url: https://github.com/Minions-Land/ManageCode/tree/main/docs
+    url: https://github.com/Diaugeia/ManageCode/tree/main/docs
     about: Keybindings, the config.toml reference, and tmux behavior.

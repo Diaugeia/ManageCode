@@ -2,7 +2,7 @@
 # Download and install a prebuilt managecode binary from GitHub Releases.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Minions-Land/ManageCode/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Diaugeia/ManageCode/main/install.sh | bash
 #
 # Env overrides:
 #   VERSION       specific release tag (default: latest)
@@ -11,7 +11,7 @@
 # Requires: curl, tar. No Rust toolchain needed.
 set -euo pipefail
 
-REPO="Minions-Land/ManageCode"
+REPO="Diaugeia/ManageCode"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 

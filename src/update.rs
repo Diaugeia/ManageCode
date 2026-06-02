@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-const REPO: &str = "Minions-Land/ManageCode";
+const REPO: &str = "Diaugeia/ManageCode";
 
 /// The version this binary was built as (no leading `v`).
 pub fn current_version() -> &'static str {

@@ -36,7 +36,7 @@ ManageCode 正是缺失的那一层：
 ## 安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Minions-Land/ManageCode/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Diaugeia/ManageCode/main/install.sh | bash
 ```
 
 脚本会下载对应平台的预编译二进制并安装到 `~/.local/bin/managecode`，无需 Rust 工具链。
@@ -46,6 +46,15 @@ curl -fsSL https://raw.githubusercontent.com/Minions-Land/ManageCode/main/instal
 
 之后用 `managecode --update`（或重跑安装命令）即可更新。ManageCode 启动时也会检查新版本并在
 顶栏显示 `⬆` 提示；可用 `--no-update-check` 或配置 `update_check = false` 关闭。
+
+卸载请运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Diaugeia/ManageCode/main/uninstall.sh | bash
+```
+
+该脚本会从 `~/.local/bin` 删除二进制。加 `--purge` 可一并删除配置目录（`~/.managecode`）；
+`~/.claude` 与 `~/.codex` 不会被触碰。
 
 ## 首次运行
 
@@ -83,7 +92,7 @@ managecode
 ## 从源码构建
 
 ```bash
-git clone https://github.com/Minions-Land/ManageCode.git
+git clone https://github.com/Diaugeia/ManageCode.git
 cd ManageCode
 ./build.sh        # 或：cargo build --release
 ```
